@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //| Liquidity.mqh                                                    |
-//| Liquidity and sweep detection for Exness ICT EA                  |
+//| Liquidity and sweep detection for Exness ICT EA                 |
 //+------------------------------------------------------------------+
 #ifndef __EXNESS_ICT_LIQUIDITY_MQH__
 #define __EXNESS_ICT_LIQUIDITY_MQH__
@@ -14,29 +14,41 @@ struct LiquidityLevel
 };
 
 //+------------------------------------------------------------------+
-//| Get previous closed candle high                                  |
+//| Get high of candle immediately preceding candleShift             |
 //+------------------------------------------------------------------+
 double GetPreviousHigh(
    const string symbol,
-   const ENUM_TIMEFRAMES timeframe
+   const ENUM_TIMEFRAMES timeframe,
+   const int candleShift
 )
 {
-   return(iHigh(symbol, timeframe, 1));
+   int previousShift = candleShift + 1;
+
+   if(previousShift < 0)
+      return(0.0);
+
+   return(iHigh(symbol, timeframe, previousShift));
 }
 
 //+------------------------------------------------------------------+
-//| Get previous closed candle low                                   |
+//| Get low of candle immediately preceding candleShift              |
 //+------------------------------------------------------------------+
 double GetPreviousLow(
    const string symbol,
-   const ENUM_TIMEFRAMES timeframe
+   const ENUM_TIMEFRAMES timeframe,
+   const int candleShift
 )
 {
-   return(iLow(symbol, timeframe, 1));
+   int previousShift = candleShift + 1;
+
+   if(previousShift < 0)
+      return(0.0);
+
+   return(iLow(symbol, timeframe, previousShift));
 }
 
 //+------------------------------------------------------------------+
-//| Find the most recent confirmed swing-high liquidity              |
+//| Find most recent confirmed buy-side liquidity                   |
 //+------------------------------------------------------------------+
 LiquidityLevel GetBuySideLiquidity(
    const string symbol,
@@ -47,6 +59,7 @@ LiquidityLevel GetBuySideLiquidity(
 )
 {
    LiquidityLevel level;
+
    level.price = 0.0;
    level.time  = 0;
    level.shift = -1;
@@ -64,16 +77,21 @@ LiquidityLevel GetBuySideLiquidity(
    if(shift < 0)
       return(level);
 
-   level.price = iHigh(symbol, timeframe, shift);
+   double price = iHigh(symbol, timeframe, shift);
+
+   if(price <= 0.0)
+      return(level);
+
+   level.price = price;
    level.time  = iTime(symbol, timeframe, shift);
    level.shift = shift;
-   level.valid = (level.price > 0.0);
+   level.valid = true;
 
    return(level);
 }
 
 //+------------------------------------------------------------------+
-//| Find the most recent confirmed swing-low liquidity               |
+//| Find most recent confirmed sell-side liquidity                  |
 //+------------------------------------------------------------------+
 LiquidityLevel GetSellSideLiquidity(
    const string symbol,
@@ -84,6 +102,7 @@ LiquidityLevel GetSellSideLiquidity(
 )
 {
    LiquidityLevel level;
+
    level.price = 0.0;
    level.time  = 0;
    level.shift = -1;
@@ -101,17 +120,21 @@ LiquidityLevel GetSellSideLiquidity(
    if(shift < 0)
       return(level);
 
-   level.price = iLow(symbol, timeframe, shift);
+   double price = iLow(symbol, timeframe, shift);
+
+   if(price <= 0.0)
+      return(level);
+
+   level.price = price;
    level.time  = iTime(symbol, timeframe, shift);
    level.shift = shift;
-   level.valid = (level.price > 0.0);
+   level.valid = true;
 
    return(level);
 }
 
 //+------------------------------------------------------------------+
-//| Check whether price swept a buy-side liquidity level             |
-//| A sweep requires the candle high to trade above the level.       |
+//| Check whether candle swept buy-side liquidity                   |
 //+------------------------------------------------------------------+
 bool DidSweepBuySide(
    const string symbol,
@@ -120,17 +143,19 @@ bool DidSweepBuySide(
    const double liquidityPrice
 )
 {
-   if(liquidityPrice <= 0.0)
+   if(candleShift < 0 || liquidityPrice <= 0.0)
       return(false);
 
    double candleHigh = iHigh(symbol, timeframe, candleShift);
+
+   if(candleHigh <= 0.0)
+      return(false);
 
    return(candleHigh > liquidityPrice);
 }
 
 //+------------------------------------------------------------------+
-//| Check whether price swept a sell-side liquidity level            |
-//| A sweep requires the candle low to trade below the level.        |
+//| Check whether candle swept sell-side liquidity                  |
 //+------------------------------------------------------------------+
 bool DidSweepSellSide(
    const string symbol,
@@ -139,16 +164,19 @@ bool DidSweepSellSide(
    const double liquidityPrice
 )
 {
-   if(liquidityPrice <= 0.0)
+   if(candleShift < 0 || liquidityPrice <= 0.0)
       return(false);
 
    double candleLow = iLow(symbol, timeframe, candleShift);
+
+   if(candleLow <= 0.0)
+      return(false);
 
    return(candleLow < liquidityPrice);
 }
 
 //+------------------------------------------------------------------+
-//| Previous high/low liquidity sweep helpers                        |
+//| Check whether candle swept the previous candle's high            |
 //+------------------------------------------------------------------+
 bool SweptPreviousHigh(
    const string symbol,
@@ -156,26 +184,61 @@ bool SweptPreviousHigh(
    const int candleShift
 )
 {
-   double previousHigh = GetPreviousHigh(symbol, timeframe);
+   if(candleShift < 0)
+      return(false);
+
+   double previousHigh = GetPreviousHigh(
+      symbol,
+      timeframe,
+      candleShift
+   );
 
    if(previousHigh <= 0.0)
       return(false);
 
-   return(iHigh(symbol, timeframe, candleShift) > previousHigh);
+   double candleHigh = iHigh(
+      symbol,
+      timeframe,
+      candleShift
+   );
+
+   if(candleHigh <= 0.0)
+      return(false);
+
+   return(candleHigh > previousHigh);
 }
 
+//+------------------------------------------------------------------+
+//| Check whether candle swept the previous candle's low             |
+//+------------------------------------------------------------------+
 bool SweptPreviousLow(
    const string symbol,
    const ENUM_TIMEFRAMES timeframe,
    const int candleShift
 )
 {
-   double previousLow = GetPreviousLow(symbol, timeframe);
+   if(candleShift < 0)
+      return(false);
+
+   double previousLow = GetPreviousLow(
+      symbol,
+      timeframe,
+      candleShift
+   );
 
    if(previousLow <= 0.0)
       return(false);
 
-   return(iLow(symbol, timeframe, candleShift) < previousLow);
+   double candleLow = iLow(
+      symbol,
+      timeframe,
+      candleShift
+   );
+
+   if(candleLow <= 0.0)
+      return(false);
+
+   return(candleLow < previousLow);
 }
 
 #endif
