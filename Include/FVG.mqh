@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //| FVG.mqh                                                          |
-//| Fair Value Gap engine for Exness ICT EA                          |
+//| ICT Fair Value Gap detection                                     |
 //+------------------------------------------------------------------+
 #ifndef __EXNESS_ICT_FVG_MQH__
 #define __EXNESS_ICT_FVG_MQH__
@@ -12,19 +12,10 @@
 enum ENUM_FVG_DIRECTION
 {
    FVG_NONE = 0,
-   FVG_BULLISH = 1,
-   FVG_BEARISH = -1
+   FVG_BULLISH,
+   FVG_BEARISH
 };
 
-//+------------------------------------------------------------------+
-
-enum ENUM_FVG_STATUS
-{
-   FVG_STATUS_NONE = 0,
-   FVG_STATUS_ACTIVE,
-   FVG_STATUS_MITIGATED,
-   FVG_STATUS_INVALIDATED
-};
 
 //====================================================================
 // FVG STRUCTURE
@@ -32,25 +23,20 @@ enum ENUM_FVG_STATUS
 
 struct FVGZone
 {
+   bool               valid;
+
    ENUM_FVG_DIRECTION direction;
-   ENUM_FVG_STATUS    status;
 
-   double upper;
-   double lower;
-   double midpoint;
+   double             upper;
+   double             lower;
 
-   double size;
+   double             size;
 
-   datetime formationTime;
+   int                signalShift;
 
-   int firstShift;
-   int middleShift;
-   int thirdShift;
-
-   bool valid;
-   bool mitigated;
-   bool invalidated;
+   datetime           signalTime;
 };
+
 
 //====================================================================
 // RESET
@@ -60,879 +46,594 @@ void ResetFVG(
    FVGZone &fvg
 )
 {
+   fvg.valid = false;
+
    fvg.direction = FVG_NONE;
-   fvg.status    = FVG_STATUS_NONE;
 
-   fvg.upper     = 0.0;
-   fvg.lower     = 0.0;
-   fvg.midpoint  = 0.0;
-   fvg.size      = 0.0;
+   fvg.upper = 0.0;
+   fvg.lower = 0.0;
+   fvg.size = 0.0;
 
-   fvg.formationTime = 0;
-
-   fvg.firstShift  = -1;
-   fvg.middleShift = -1;
-   fvg.thirdShift  = -1;
-
-   fvg.valid       = false;
-   fvg.mitigated   = false;
-   fvg.invalidated = false;
+   fvg.signalShift = -1;
+   fvg.signalTime = 0;
 }
 
+
 //====================================================================
-// BASIC VALIDATION
+// BASIC FVG HELPERS
 //====================================================================
 
-bool IsValidFVG(
-   const FVGZone &fvg
+// Calculate the size of a potential bullish FVG.
+//
+// Three candles:
+//
+// Oldest        Middle        Newest
+//   C3            C2            C1
+//
+// Bullish FVG exists when:
+//
+// C1 low > C3 high
+//
+// Gap:
+//
+// C3 high ---------------- lower
+//                           |
+//                           | FVG
+//                           |
+// C1 low  ---------------- upper
+double CalculateBullishFVGSize(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int shift
 )
 {
-   if(!fvg.valid)
-      return(false);
+   if(shift < 1)
+      return 0.0;
 
-   if(fvg.direction == FVG_NONE)
-      return(false);
+   double newestLow =
+      iLow(
+         symbol,
+         timeframe,
+         shift
+      );
 
-   if(fvg.upper <= 0.0)
-      return(false);
+   double oldestHigh =
+      iHigh(
+         symbol,
+         timeframe,
+         shift + 2
+      );
 
-   if(fvg.lower <= 0.0)
-      return(false);
+   if(newestLow <= 0.0 || oldestHigh <= 0.0)
+      return 0.0;
 
-   if(fvg.upper <= fvg.lower)
-      return(false);
+   if(newestLow <= oldestHigh)
+      return 0.0;
 
-   if(fvg.size <= 0.0)
-      return(false);
-
-   if(fvg.formationTime <= 0)
-      return(false);
-
-   return(true);
+   return newestLow - oldestHigh;
 }
 
-//====================================================================
-// FVG SIZE
-//====================================================================
 
-double GetFVGSize(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const ENUM_FVG_DIRECTION direction
+// Calculate the size of a potential bearish FVG.
+//
+// Bearish FVG exists when:
+//
+// C1 high < C3 low
+double CalculateBearishFVGSize(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int shift
 )
 {
-   if(candleShift < 1)
-      return(0.0);
+   if(shift < 1)
+      return 0.0;
 
-   if(direction == FVG_BULLISH)
-   {
-      /*
-         Three-candle bullish FVG:
+   double newestHigh =
+      iHigh(
+         symbol,
+         timeframe,
+         shift
+      );
 
-         Candle 1 high < Candle 3 low
+   double oldestLow =
+      iLow(
+         symbol,
+         timeframe,
+         shift + 2
+      );
 
-         Gap:
-         Candle 1 high -> Candle 3 low
-      */
+   if(newestHigh <= 0.0 || oldestLow <= 0.0)
+      return 0.0;
 
-      double firstHigh =
-         iHigh(
-            symbol,
-            timeframe,
-            candleShift + 2
-         );
+   if(newestHigh >= oldestLow)
+      return 0.0;
 
-      double thirdLow =
-         iLow(
-            symbol,
-            timeframe,
-            candleShift
-         );
-
-      if(firstHigh <= 0.0 || thirdLow <= 0.0)
-         return(0.0);
-
-      if(thirdLow <= firstHigh)
-         return(0.0);
-
-      return(thirdLow - firstHigh);
-   }
-
-   if(direction == FVG_BEARISH)
-   {
-      /*
-         Three-candle bearish FVG:
-
-         Candle 1 low > Candle 3 high
-
-         Gap:
-         Candle 3 high -> Candle 1 low
-      */
-
-      double firstLow =
-         iLow(
-            symbol,
-            timeframe,
-            candleShift + 2
-         );
-
-      double thirdHigh =
-         iHigh(
-            symbol,
-            timeframe,
-            candleShift
-         );
-
-      if(firstLow <= 0.0 || thirdHigh <= 0.0)
-         return(0.0);
-
-      if(firstLow <= thirdHigh)
-         return(0.0);
-
-      return(firstLow - thirdHigh);
-   }
-
-   return(0.0);
+   return oldestLow - newestHigh;
 }
 
+
 //====================================================================
-// BULLISH FVG DETECTION
+// BULLISH FVG
 //====================================================================
 
-//+------------------------------------------------------------------+
-//| Detect bullish three-candle FVG                                  |
-//|                                                                  |
-//| Candle 1 high < Candle 3 low                                    |
-//|                                                                  |
-//| The resulting zone is:                                          |
-//|                                                                  |
-//| lower = Candle 1 high                                            |
-//| upper = Candle 3 low                                             |
-//+------------------------------------------------------------------+
-
+// Detect a bullish three-candle imbalance.
+//
+// shift = newest closed candle.
+//
+// Candle relationships:
+//
+// oldest candle high < newest candle low
+//
+// The middle candle is the displacement/impulse candle.
 bool DetectBullishFVG(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int shift,
+   double minimumSize,
    FVGZone &fvg
 )
 {
    ResetFVG(fvg);
 
-   if(candleShift < 1)
-      return(false);
+   if(shift < 1)
+      return false;
 
-   int firstShift  = candleShift + 2;
-   int middleShift = candleShift + 1;
-   int thirdShift  = candleShift;
+   int bars = Bars(symbol, timeframe);
 
-   double firstHigh =
+   if(bars <= 0)
+      return false;
+
+   if(shift + 2 >= bars)
+      return false;
+
+   double oldestHigh =
       iHigh(
          symbol,
          timeframe,
-         firstShift
+         shift + 2
       );
 
-   double middleHigh =
-      iHigh(
-         symbol,
-         timeframe,
-         middleShift
-      );
-
-   double middleLow =
+   double newestLow =
       iLow(
          symbol,
          timeframe,
-         middleShift
+         shift
       );
 
-   double thirdLow =
-      iLow(
-         symbol,
-         timeframe,
-         thirdShift
-      );
+   if(oldestHigh <= 0.0 || newestLow <= 0.0)
+      return false;
 
-   if(
-      firstHigh <= 0.0 ||
-      middleHigh <= 0.0 ||
-      middleLow <= 0.0 ||
-      thirdLow <= 0.0
-   )
-   {
-      return(false);
-   }
-
-   if(thirdLow <= firstHigh)
-      return(false);
+   // Bullish imbalance.
+   if(newestLow <= oldestHigh)
+      return false;
 
    double gapSize =
-      thirdLow - firstHigh;
+      newestLow - oldestHigh;
 
-   if(gapSize <= 0.0)
-      return(false);
+   if(gapSize < minimumSize)
+      return false;
 
-   double point =
-      SymbolInfoDouble(
-         symbol,
-         SYMBOL_POINT
-      );
-
-   if(point <= 0.0)
-      return(false);
-
-   double gapSizePoints =
-      gapSize / point;
-
-   if(gapSizePoints < ICT_MIN_FVG_SIZE_PTS)
-      return(false);
+   fvg.valid = true;
 
    fvg.direction = FVG_BULLISH;
-   fvg.status    = FVG_STATUS_ACTIVE;
 
-   fvg.lower     = firstHigh;
-   fvg.upper     = thirdLow;
-   fvg.midpoint  = (firstHigh + thirdLow) / 2.0;
-   fvg.size      = gapSize;
+   fvg.lower = oldestHigh;
+   fvg.upper = newestLow;
 
-   fvg.formationTime =
+   fvg.size = gapSize;
+
+   fvg.signalShift = shift;
+
+   fvg.signalTime =
       iTime(
          symbol,
          timeframe,
-         thirdShift
+         shift
       );
 
-   fvg.firstShift  = firstShift;
-   fvg.middleShift = middleShift;
-   fvg.thirdShift  = thirdShift;
-
-   fvg.valid       = true;
-   fvg.mitigated   = false;
-   fvg.invalidated = false;
-
-   return(true);
+   return true;
 }
 
+
 //====================================================================
-// BEARISH FVG DETECTION
+// BEARISH FVG
 //====================================================================
 
-//+------------------------------------------------------------------+
-//| Detect bearish three-candle FVG                                  |
-//|                                                                  |
-//| Candle 1 low > Candle 3 high                                    |
-//|                                                                  |
-//| Zone:                                                            |
-//|                                                                  |
-//| lower = Candle 3 high                                            |
-//| upper = Candle 1 low                                             |
-//+------------------------------------------------------------------+
-
+// Detect a bearish three-candle imbalance.
+//
+// Bearish imbalance:
+//
+// newest candle high < oldest candle low
 bool DetectBearishFVG(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int shift,
+   double minimumSize,
    FVGZone &fvg
 )
 {
    ResetFVG(fvg);
 
-   if(candleShift < 1)
-      return(false);
+   if(shift < 1)
+      return false;
 
-   int firstShift  = candleShift + 2;
-   int middleShift = candleShift + 1;
-   int thirdShift  = candleShift;
+   int bars = Bars(symbol, timeframe);
 
-   double firstLow =
-      iLow(
-         symbol,
-         timeframe,
-         firstShift
-      );
+   if(bars <= 0)
+      return false;
 
-   double middleHigh =
+   if(shift + 2 >= bars)
+      return false;
+
+   double newestHigh =
       iHigh(
          symbol,
          timeframe,
-         middleShift
+         shift
       );
 
-   double middleLow =
+   double oldestLow =
       iLow(
          symbol,
          timeframe,
-         middleShift
+         shift + 2
       );
 
-   double thirdHigh =
-      iHigh(
-         symbol,
-         timeframe,
-         thirdShift
-      );
+   if(newestHigh <= 0.0 || oldestLow <= 0.0)
+      return false;
 
-   if(
-      firstLow <= 0.0 ||
-      middleHigh <= 0.0 ||
-      middleLow <= 0.0 ||
-      thirdHigh <= 0.0
-   )
-   {
-      return(false);
-   }
-
-   if(firstLow <= thirdHigh)
-      return(false);
+   // Bearish imbalance.
+   if(newestHigh >= oldestLow)
+      return false;
 
    double gapSize =
-      firstLow - thirdHigh;
+      oldestLow - newestHigh;
 
-   if(gapSize <= 0.0)
-      return(false);
+   if(gapSize < minimumSize)
+      return false;
 
-   double point =
-      SymbolInfoDouble(
-         symbol,
-         SYMBOL_POINT
-      );
-
-   if(point <= 0.0)
-      return(false);
-
-   double gapSizePoints =
-      gapSize / point;
-
-   if(gapSizePoints < ICT_MIN_FVG_SIZE_PTS)
-      return(false);
+   fvg.valid = true;
 
    fvg.direction = FVG_BEARISH;
-   fvg.status    = FVG_STATUS_ACTIVE;
 
-   fvg.lower     = thirdHigh;
-   fvg.upper     = firstLow;
-   fvg.midpoint  = (thirdHigh + firstLow) / 2.0;
-   fvg.size      = gapSize;
+   fvg.lower = newestHigh;
+   fvg.upper = oldestLow;
 
-   fvg.formationTime =
+   fvg.size = gapSize;
+
+   fvg.signalShift = shift;
+
+   fvg.signalTime =
       iTime(
          symbol,
          timeframe,
-         thirdShift
+         shift
       );
 
-   fvg.firstShift  = firstShift;
-   fvg.middleShift = middleShift;
-   fvg.thirdShift  = thirdShift;
-
-   fvg.valid       = true;
-   fvg.mitigated   = false;
-   fvg.invalidated = false;
-
-   return(true);
+   return true;
 }
+
 
 //====================================================================
 // GENERIC FVG DETECTION
 //====================================================================
 
-bool DetectFVG(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const ENUM_FVG_DIRECTION direction,
+// Returns:
+//
+//  1 = bullish FVG
+// -1 = bearish FVG
+//  0 = no FVG
+//
+// The function checks the newest closed candle first.
+int DetectFVG(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int shift,
+   double minimumSize,
    FVGZone &fvg
 )
 {
    ResetFVG(fvg);
 
-   if(direction == FVG_BULLISH)
+   FVGZone bullish;
+
+   if(DetectBullishFVG(
+      symbol,
+      timeframe,
+      shift,
+      minimumSize,
+      bullish
+   ))
    {
-      return(
-         DetectBullishFVG(
-            symbol,
-            timeframe,
-            candleShift,
-            fvg
-         )
-      );
+      fvg = bullish;
+
+      return 1;
    }
 
-   if(direction == FVG_BEARISH)
+   FVGZone bearish;
+
+   if(DetectBearishFVG(
+      symbol,
+      timeframe,
+      shift,
+      minimumSize,
+      bearish
+   ))
    {
-      return(
-         DetectBearishFVG(
-            symbol,
-            timeframe,
-            candleShift,
-            fvg
-         )
-      );
+      fvg = bearish;
+
+      return -1;
    }
 
-   return(false);
+   return 0;
 }
 
-//====================================================================
-// PRICE INSIDE FVG
-//====================================================================
-
-bool IsPriceInsideFVG(
-   const double price,
-   const FVGZone &fvg
-)
-{
-   if(!IsValidFVG(fvg))
-      return(false);
-
-   if(price <= 0.0)
-      return(false);
-
-   return(
-      price >= fvg.lower &&
-      price <= fvg.upper
-   );
-}
 
 //====================================================================
-// PRICE TOUCHES FVG
+// FVG SEARCH
 //====================================================================
 
-bool DidCandleTouchFVG(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const FVGZone &fvg
-)
-{
-   if(!IsValidFVG(fvg))
-      return(false);
-
-   if(candleShift < 0)
-      return(false);
-
-   double high =
-      iHigh(
-         symbol,
-         timeframe,
-         candleShift
-      );
-
-   double low =
-      iLow(
-         symbol,
-         timeframe,
-         candleShift
-      );
-
-   if(high <= 0.0 || low <= 0.0)
-      return(false);
-
-   if(high < fvg.lower)
-      return(false);
-
-   if(low > fvg.upper)
-      return(false);
-
-   return(true);
-}
-
-//====================================================================
-// FVG MITIGATION
-//====================================================================
-
-//+------------------------------------------------------------------+
-//| Bullish FVG mitigation                                           |
-//|                                                                  |
-//| Price returns into the bullish gap.                              |
-//+------------------------------------------------------------------+
-
-bool IsBullishFVGMitigated(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const FVGZone &fvg
-)
-{
-   if(!IsValidFVG(fvg))
-      return(false);
-
-   if(fvg.direction != FVG_BULLISH)
-      return(false);
-
-   return(
-      DidCandleTouchFVG(
-         symbol,
-         timeframe,
-         candleShift,
-         fvg
-      )
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Bearish FVG mitigation                                           |
-//+------------------------------------------------------------------+
-
-bool IsBearishFVGMitigated(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const FVGZone &fvg
-)
-{
-   if(!IsValidFVG(fvg))
-      return(false);
-
-   if(fvg.direction != FVG_BEARISH)
-      return(false);
-
-   return(
-      DidCandleTouchFVG(
-         symbol,
-         timeframe,
-         candleShift,
-         fvg
-      )
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Generic mitigation                                               |
-//+------------------------------------------------------------------+
-
-bool IsFVGMitigated(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const FVGZone &fvg
-)
-{
-   if(!IsValidFVG(fvg))
-      return(false);
-
-   return(
-      DidCandleTouchFVG(
-         symbol,
-         timeframe,
-         candleShift,
-         fvg
-      )
-   );
-}
-
-//====================================================================
-// FVG INVALIDATION
-//====================================================================
-
-//+------------------------------------------------------------------+
-//| Bullish FVG invalidation                                         |
-//|                                                                  |
-//| A bullish FVG becomes invalid when a CLOSED candle closes below  |
-//| the lower boundary of the gap.                                   |
-//+------------------------------------------------------------------+
-
-bool IsBullishFVGInvalidated(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const FVGZone &fvg
-)
-{
-   if(!IsValidFVG(fvg))
-      return(false);
-
-   if(fvg.direction != FVG_BULLISH)
-      return(false);
-
-   if(candleShift < 1)
-      return(false);
-
-   double close =
-      iClose(
-         symbol,
-         timeframe,
-         candleShift
-      );
-
-   if(close <= 0.0)
-      return(false);
-
-   return(close < fvg.lower);
-}
-
-//+------------------------------------------------------------------+
-//| Bearish FVG invalidation                                         |
-//|                                                                  |
-//| A bearish FVG becomes invalid when a CLOSED candle closes above  |
-//| the upper boundary.                                              |
-//+------------------------------------------------------------------+
-
-bool IsBearishFVGInvalidated(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const FVGZone &fvg
-)
-{
-   if(!IsValidFVG(fvg))
-      return(false);
-
-   if(fvg.direction != FVG_BEARISH)
-      return(false);
-
-   if(candleShift < 1)
-      return(false);
-
-   double close =
-      iClose(
-         symbol,
-         timeframe,
-         candleShift
-      );
-
-   if(close <= 0.0)
-      return(false);
-
-   return(close > fvg.upper);
-}
-
-//+------------------------------------------------------------------+
-
-bool IsFVGInvalidated(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const FVGZone &fvg
-)
-{
-   if(!IsValidFVG(fvg))
-      return(false);
-
-   if(fvg.direction == FVG_BULLISH)
-   {
-      return(
-         IsBullishFVGInvalidated(
-            symbol,
-            timeframe,
-            candleShift,
-            fvg
-         )
-      );
-   }
-
-   if(fvg.direction == FVG_BEARISH)
-   {
-      return(
-         IsBearishFVGInvalidated(
-            symbol,
-            timeframe,
-            candleShift,
-            fvg
-         )
-      );
-   }
-
-   return(false);
-}
-
-//====================================================================
-// FVG STATUS UPDATE
-//====================================================================
-
-//+------------------------------------------------------------------+
-//| Update FVG status using a CLOSED candle                          |
-//+------------------------------------------------------------------+
-
-bool UpdateFVGStatus(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
+// Search backward for the most recent bullish FVG.
+bool FindRecentBullishFVG(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int startShift,
+   int lookback,
+   double minimumSize,
    FVGZone &fvg
 )
 {
-   if(!IsValidFVG(fvg))
-      return(false);
+   ResetFVG(fvg);
 
-   if(candleShift < 1)
-      return(false);
+   if(startShift < 1)
+      startShift = 1;
 
-   //--- Once invalidated, it remains invalidated.
-   if(fvg.invalidated)
+   if(lookback <= 0)
+      return false;
+
+   int bars = Bars(symbol, timeframe);
+
+   if(bars <= 0)
+      return false;
+
+   int endShift =
+      MathMin(
+         startShift + lookback - 1,
+         bars - 3
+      );
+
+   if(startShift > endShift)
+      return false;
+
+   for(int shift = startShift;
+       shift <= endShift;
+       shift++)
    {
-      fvg.status = FVG_STATUS_INVALIDATED;
-      return(true);
+      if(DetectBullishFVG(
+         symbol,
+         timeframe,
+         shift,
+         minimumSize,
+         fvg
+      ))
+      {
+         return true;
+      }
    }
 
-   //--- Check invalidation first.
-   if(IsFVGInvalidated(
-      symbol,
-      timeframe,
-      candleShift,
-      fvg
-   ))
-   {
-      fvg.invalidated = true;
-      fvg.mitigated   = false;
-      fvg.status      = FVG_STATUS_INVALIDATED;
-
-      return(true);
-   }
-
-   //--- Detect mitigation.
-   if(IsFVGMitigated(
-      symbol,
-      timeframe,
-      candleShift,
-      fvg
-   ))
-   {
-      fvg.mitigated = true;
-      fvg.status    = FVG_STATUS_MITIGATED;
-
-      return(true);
-   }
-
-   //--- Still active.
-   fvg.status = FVG_STATUS_ACTIVE;
-
-   return(true);
+   return false;
 }
+
+
+// Search backward for the most recent bearish FVG.
+bool FindRecentBearishFVG(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int startShift,
+   int lookback,
+   double minimumSize,
+   FVGZone &fvg
+)
+{
+   ResetFVG(fvg);
+
+   if(startShift < 1)
+      startShift = 1;
+
+   if(lookback <= 0)
+      return false;
+
+   int bars = Bars(symbol, timeframe);
+
+   if(bars <= 0)
+      return false;
+
+   int endShift =
+      MathMin(
+         startShift + lookback - 1,
+         bars - 3
+      );
+
+   if(startShift > endShift)
+      return false;
+
+   for(int shift = startShift;
+       shift <= endShift;
+       shift++)
+   {
+      if(DetectBearishFVG(
+         symbol,
+         timeframe,
+         shift,
+         minimumSize,
+         fvg
+      ))
+      {
+         return true;
+      }
+   }
+
+   return false;
+}
+
 
 //====================================================================
-// ENTRY ZONE VALIDATION
+// DIRECTIONAL FVG SEARCH
 //====================================================================
 
-//+------------------------------------------------------------------+
-//| Bullish entry-zone validation                                    |
-//|                                                                  |
-//| Price must be inside the bullish FVG.                            |
-//|                                                                  |
-//| For a bullish setup, price approaching from ABOVE and returning  |
-//| into the gap is the expected retracement behavior.              |
-//+------------------------------------------------------------------+
-
-bool IsBullishFVGEntryZone(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const FVGZone &fvg
+// direction:
+//
+//  1 = bullish
+// -1 = bearish
+bool FindDirectionalFVG(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int direction,
+   int startShift,
+   int lookback,
+   double minimumSize,
+   FVGZone &fvg
 )
 {
-   if(!IsValidFVG(fvg))
-      return(false);
+   ResetFVG(fvg);
 
-   if(fvg.direction != FVG_BULLISH)
-      return(false);
-
-   if(fvg.invalidated)
-      return(false);
-
-   if(candleShift < 0)
-      return(false);
-
-   double high =
-      iHigh(
-         symbol,
-         timeframe,
-         candleShift
-      );
-
-   double low =
-      iLow(
-         symbol,
-         timeframe,
-         candleShift
-      );
-
-   if(high <= 0.0 || low <= 0.0)
-      return(false);
-
-   //--- Candle must actually enter the FVG.
-   if(high < fvg.lower)
-      return(false);
-
-   if(low > fvg.upper)
-      return(false);
-
-   return(true);
-}
-
-//+------------------------------------------------------------------+
-//| Bearish entry-zone validation                                    |
-//+------------------------------------------------------------------+
-
-bool IsBearishFVGEntryZone(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const FVGZone &fvg
-)
-{
-   if(!IsValidFVG(fvg))
-      return(false);
-
-   if(fvg.direction != FVG_BEARISH)
-      return(false);
-
-   if(fvg.invalidated)
-      return(false);
-
-   if(candleShift < 0)
-      return(false);
-
-   double high =
-      iHigh(
-         symbol,
-         timeframe,
-         candleShift
-      );
-
-   double low =
-      iLow(
-         symbol,
-         timeframe,
-         candleShift
-      );
-
-   if(high <= 0.0 || low <= 0.0)
-      return(false);
-
-   if(high < fvg.lower)
-      return(false);
-
-   if(low > fvg.upper)
-      return(false);
-
-   return(true);
-}
-
-//+------------------------------------------------------------------+
-//| Generic entry-zone validation                                    |
-//+------------------------------------------------------------------+
-
-bool IsFVGEntryZone(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const FVGZone &fvg
-)
-{
-   if(!IsValidFVG(fvg))
-      return(false);
-
-   if(fvg.direction == FVG_BULLISH)
+   if(direction > 0)
    {
-      return(
-         IsBullishFVGEntryZone(
-            symbol,
-            timeframe,
-            candleShift,
-            fvg
-         )
+      return FindRecentBullishFVG(
+         symbol,
+         timeframe,
+         startShift,
+         lookback,
+         minimumSize,
+         fvg
       );
    }
 
-   if(fvg.direction == FVG_BEAR
+   if(direction < 0)
+   {
+      return FindRecentBearishFVG(
+         symbol,
+         timeframe,
+         startShift,
+         lookback,
+         minimumSize,
+         fvg
+      );
+   }
+
+   return false;
+}
+
+
+//====================================================================
+// FVG DIRECTION HELPERS
+//====================================================================
+
+bool IsBullishFVG(
+   FVGZone &fvg
+)
+{
+   return
+      fvg.valid &&
+      fvg.direction == FVG_BULLISH;
+}
+
+
+bool IsBearishFVG(
+   FVGZone &fvg
+)
+{
+   return
+      fvg.valid &&
+      fvg.direction == FVG_BEARISH;
+}
+
+
+//====================================================================
+// PRICE LOCATION
+//====================================================================
+
+// Determine whether price is inside the FVG.
+bool IsPriceInsideFVG(
+   double price,
+   FVGZone &fvg
+)
+{
+   if(!fvg.valid)
+      return false;
+
+   return
+      price >= fvg.lower &&
+      price <= fvg.upper;
+}
+
+
+// Determine whether price has entered the bullish FVG.
+bool HasPriceEnteredBullishFVG(
+   double price,
+   FVGZone &fvg
+)
+{
+   if(!IsBullishFVG(fvg))
+      return false;
+
+   return price <= fvg.upper;
+}
+
+
+// Determine whether price has entered the bearish FVG.
+bool HasPriceEnteredBearishFVG(
+   double price,
+   FVGZone &fvg
+)
+{
+   if(!IsBearishFVG(fvg))
+      return false;
+
+   return price >= fvg.lower;
+}
+
+
+//====================================================================
+// TEXT HELPERS
+//====================================================================
+
+string FVGDirectionToString(
+   ENUM_FVG_DIRECTION direction
+)
+{
+   switch(direction)
+   {
+      case FVG_BULLISH:
+         return "BULLISH FVG";
+
+      case FVG_BEARISH:
+         return "BEARISH FVG";
+
+      default:
+         return "NONE";
+   }
+}
+
+
+string FVGDescription(
+   FVGZone &fvg
+)
+{
+   if(!fvg.valid)
+      return "INVALID FVG";
+
+   return StringFormat(
+      "%s | Lower=%f | Upper=%f | Size=%f | Shift=%d",
+      FVGDirectionToString(fvg.direction),
+      fvg.lower,
+      fvg.upper,
+      fvg.size,
+      fvg.signalShift
+   );
+}
+
+
+//+------------------------------------------------------------------+
+#endif
+//+------------------------------------------------------------------+
