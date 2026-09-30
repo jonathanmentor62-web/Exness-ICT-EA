@@ -1,685 +1,628 @@
 //+------------------------------------------------------------------+
 //| Liquidity.mqh                                                    |
-//| Liquidity and sweep detection for Exness ICT EA                 |
+//| ICT liquidity and liquidity sweep detection                      |
 //+------------------------------------------------------------------+
 #ifndef __EXNESS_ICT_LIQUIDITY_MQH__
 #define __EXNESS_ICT_LIQUIDITY_MQH__
 
+#include "MarketStructure.mqh"
+
 //====================================================================
-// LIQUIDITY STRUCTURE
+// LIQUIDITY TYPES
+//====================================================================
+
+enum ENUM_LIQUIDITY_TYPE
+{
+   LIQUIDITY_NONE = 0,
+   LIQUIDITY_BUY_SIDE,
+   LIQUIDITY_SELL_SIDE
+};
+
+
+//====================================================================
+// LIQUIDITY LEVEL
 //====================================================================
 
 struct LiquidityLevel
 {
-   double   price;
-   datetime time;
-   int      shift;
-   bool     valid;
+   bool                valid;
+   ENUM_LIQUIDITY_TYPE type;
+
+   double              price;
+
+   int                 shift;
+   datetime            time;
 };
 
+
 //====================================================================
-// BASIC VALIDATION
+// LIQUIDITY SWEEP
 //====================================================================
 
-bool IsValidLiquidityPrice(const double price)
+struct LiquiditySweep
 {
-   return(price > 0.0);
-}
+   bool                valid;
+
+   ENUM_LIQUIDITY_TYPE type;
+
+   double              liquidityPrice;
+   double              sweepExtreme;
+
+   int                 liquidityShift;
+   int                 signalShift;
+
+   datetime            liquidityTime;
+   datetime            signalTime;
+};
+
 
 //====================================================================
-// PREVIOUS CANDLE LEVELS
+// RESET HELPERS
 //====================================================================
 
-double GetPreviousHigh(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift
+void ResetLiquidityLevel(
+   LiquidityLevel &level
 )
 {
-   if(candleShift < 0)
-      return(0.0);
-
-   int previousShift = candleShift + 1;
-
-   double price = iHigh(
-      symbol,
-      timeframe,
-      previousShift
-   );
-
-   if(!IsValidLiquidityPrice(price))
-      return(0.0);
-
-   return(price);
-}
-
-//+------------------------------------------------------------------+
-
-double GetPreviousLow(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift
-)
-{
-   if(candleShift < 0)
-      return(0.0);
-
-   int previousShift = candleShift + 1;
-
-   double price = iLow(
-      symbol,
-      timeframe,
-      previousShift
-   );
-
-   if(!IsValidLiquidityPrice(price))
-      return(0.0);
-
-   return(price);
-}
-
-//====================================================================
-// CONFIRMED SWING LIQUIDITY
-//====================================================================
-
-//+------------------------------------------------------------------+
-//| Get most recent confirmed buy-side liquidity                     |
-//|                                                                  |
-//| Buy-side liquidity = confirmed swing high.                       |
-//+------------------------------------------------------------------+
-
-LiquidityLevel GetBuySideLiquidity(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int lookback,
-   const int leftBars,
-   const int rightBars
-)
-{
-   LiquidityLevel level;
-
-   level.price = 0.0;
-   level.time  = 0;
-   level.shift = -1;
    level.valid = false;
 
-   int shift = GetRecentSwingHighShift(
+   level.type = LIQUIDITY_NONE;
+
+   level.price = 0.0;
+
+   level.shift = -1;
+   level.time = 0;
+}
+
+
+void ResetLiquiditySweep(
+   LiquiditySweep &sweep
+)
+{
+   sweep.valid = false;
+
+   sweep.type = LIQUIDITY_NONE;
+
+   sweep.liquidityPrice = 0.0;
+   sweep.sweepExtreme = 0.0;
+
+   sweep.liquidityShift = -1;
+   sweep.signalShift = -1;
+
+   sweep.liquidityTime = 0;
+   sweep.signalTime = 0;
+}
+
+
+//====================================================================
+// BUY-SIDE LIQUIDITY
+//====================================================================
+
+// Buy-side liquidity is represented by a confirmed swing high.
+//
+// Typical ICT interpretation:
+// Buy stops tend to accumulate above obvious highs.
+//
+// The latest confirmed swing high is therefore treated as the
+// nearest detectable buy-side liquidity pool.
+bool FindNearestBuySideLiquidity(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int lookback,
+   int leftBars,
+   int rightBars,
+   LiquidityLevel &level
+)
+{
+   ResetLiquidityLevel(level);
+
+   SwingPoint swingHigh;
+
+   if(!FindRecentSwingHigh(
       symbol,
       timeframe,
       lookback,
       leftBars,
-      rightBars
-   );
+      rightBars,
+      swingHigh
+   ))
+   {
+      return false;
+   }
 
-   if(shift < 0)
-      return(level);
-
-   double price = iHigh(
-      symbol,
-      timeframe,
-      shift
-   );
-
-   if(!IsValidLiquidityPrice(price))
-      return(level);
-
-   datetime levelTime = iTime(
-      symbol,
-      timeframe,
-      shift
-   );
-
-   if(levelTime <= 0)
-      return(level);
-
-   level.price = price;
-   level.time  = levelTime;
-   level.shift = shift;
    level.valid = true;
 
-   return(level);
+   level.type = LIQUIDITY_BUY_SIDE;
+
+   level.price = swingHigh.price;
+
+   level.shift = swingHigh.shift;
+   level.time = swingHigh.time;
+
+   return true;
 }
 
-//+------------------------------------------------------------------+
-//| Get most recent confirmed sell-side liquidity                    |
-//|                                                                  |
-//| Sell-side liquidity = confirmed swing low.                       |
-//+------------------------------------------------------------------+
 
-LiquidityLevel GetSellSideLiquidity(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int lookback,
-   const int leftBars,
-   const int rightBars
+//====================================================================
+// SELL-SIDE LIQUIDITY
+//====================================================================
+
+// Sell-side liquidity is represented by a confirmed swing low.
+//
+// Typical ICT interpretation:
+// Sell stops tend to accumulate below obvious lows.
+bool FindNearestSellSideLiquidity(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int lookback,
+   int leftBars,
+   int rightBars,
+   LiquidityLevel &level
 )
 {
-   LiquidityLevel level;
+   ResetLiquidityLevel(level);
 
-   level.price = 0.0;
-   level.time  = 0;
-   level.shift = -1;
-   level.valid = false;
+   SwingPoint swingLow;
 
-   int shift = GetRecentSwingLowShift(
+   if(!FindRecentSwingLow(
       symbol,
       timeframe,
       lookback,
       leftBars,
-      rightBars
-   );
+      rightBars,
+      swingLow
+   ))
+   {
+      return false;
+   }
 
-   if(shift < 0)
-      return(level);
-
-   double price = iLow(
-      symbol,
-      timeframe,
-      shift
-   );
-
-   if(!IsValidLiquidityPrice(price))
-      return(level);
-
-   datetime levelTime = iTime(
-      symbol,
-      timeframe,
-      shift
-   );
-
-   if(levelTime <= 0)
-      return(level);
-
-   level.price = price;
-   level.time  = levelTime;
-   level.shift = shift;
    level.valid = true;
 
-   return(level);
+   level.type = LIQUIDITY_SELL_SIDE;
+
+   level.price = swingLow.price;
+
+   level.shift = swingLow.shift;
+   level.time = swingLow.time;
+
+   return true;
 }
 
+
 //====================================================================
-// PREVIOUS-CANDLE LIQUIDITY
+// LIQUIDITY PRICE HELPERS
 //====================================================================
 
-//+------------------------------------------------------------------+
-//| Check if candle swept previous candle high                       |
-//+------------------------------------------------------------------+
-
-bool SweptPreviousHigh(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift
+double GetNearestBuySideLiquidityPrice(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int lookback,
+   int leftBars,
+   int rightBars
 )
 {
-   if(candleShift < 0)
-      return(false);
+   LiquidityLevel level;
 
-   double previousHigh = GetPreviousHigh(
+   if(!FindNearestBuySideLiquidity(
       symbol,
       timeframe,
-      candleShift
-   );
+      lookback,
+      leftBars,
+      rightBars,
+      level
+   ))
+   {
+      return 0.0;
+   }
 
-   if(previousHigh <= 0.0)
-      return(false);
-
-   double candleHigh = iHigh(
-      symbol,
-      timeframe,
-      candleShift
-   );
-
-   if(candleHigh <= 0.0)
-      return(false);
-
-   return(candleHigh > previousHigh);
+   return level.price;
 }
 
-//+------------------------------------------------------------------+
-//| Check if candle swept previous candle low                        |
-//+------------------------------------------------------------------+
 
-bool SweptPreviousLow(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift
+double GetNearestSellSideLiquidityPrice(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int lookback,
+   int leftBars,
+   int rightBars
 )
 {
-   if(candleShift < 0)
-      return(false);
+   LiquidityLevel level;
 
-   double previousLow = GetPreviousLow(
+   if(!FindNearestSellSideLiquidity(
       symbol,
       timeframe,
-      candleShift
-   );
+      lookback,
+      leftBars,
+      rightBars,
+      level
+   ))
+   {
+      return 0.0;
+   }
 
-   if(previousLow <= 0.0)
-      return(false);
-
-   double candleLow = iLow(
-      symbol,
-      timeframe,
-      candleShift
-   );
-
-   if(candleLow <= 0.0)
-      return(false);
-
-   return(candleLow < previousLow);
+   return level.price;
 }
 
+
 //====================================================================
-// GENERIC LIQUIDITY SWEEPS
+// SWEEP DETECTION
 //====================================================================
 
-//+------------------------------------------------------------------+
-//| Detect buy-side liquidity sweep                                  |
-//|                                                                  |
-//| Price trades above the liquidity level.                          |
-//|                                                                  |
-//| NOTE: This function detects the raid itself.                    |
-//| It does NOT require a close back below the level.               |
-//+------------------------------------------------------------------+
-
-bool DidSweepBuySide(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const double liquidityPrice
+// Detect a buy-side liquidity sweep.
+//
+// Price must:
+// 1. Trade above the liquidity level.
+// 2. Then close back below the liquidity level.
+//
+// This models a sweep of buy-side liquidity rather than simply
+// detecting a normal breakout.
+bool DetectBuySideLiquiditySweep(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int signalShift,
+   int lookback,
+   int leftBars,
+   int rightBars,
+   double minimumSweepDistance,
+   LiquiditySweep &sweep
 )
 {
-   if(candleShift < 0)
-      return(false);
+   ResetLiquiditySweep(sweep);
 
-   if(liquidityPrice <= 0.0)
-      return(false);
+   if(signalShift < 1)
+      return false;
 
-   double candleHigh = iHigh(
+   LiquidityLevel level;
+
+   if(!FindNearestBuySideLiquidity(
       symbol,
       timeframe,
-      candleShift
-   );
+      lookback,
+      leftBars,
+      rightBars,
+      level
+   ))
+   {
+      return false;
+   }
 
-   if(candleHigh <= 0.0)
-      return(false);
+   // The liquidity level must be older than the signal candle.
+   if(level.shift <= signalShift)
+      return false;
 
-   return(candleHigh > liquidityPrice);
-}
-
-//+------------------------------------------------------------------+
-//| Detect sell-side liquidity sweep                                |
-//|                                                                  |
-//| Price trades below the liquidity level.                          |
-//+------------------------------------------------------------------+
-
-bool DidSweepSellSide(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const double liquidityPrice
-)
-{
-   if(candleShift < 0)
-      return(false);
-
-   if(liquidityPrice <= 0.0)
-      return(false);
-
-   double candleLow = iLow(
-      symbol,
-      timeframe,
-      candleShift
-   );
-
-   if(candleLow <= 0.0)
-      return(false);
-
-   return(candleLow < liquidityPrice);
-}
-
-//====================================================================
-// SWEEP + CLOSE BACK INSIDE
-//====================================================================
-
-//+------------------------------------------------------------------+
-//| Buy-side liquidity swept and price closed back below level       |
-//|                                                                  |
-//| This is particularly useful for detecting a potential bearish    |
-//| liquidity raid before bearish displacement/MSS.                  |
-//+------------------------------------------------------------------+
-
-bool SweptAndClosedBelowBuySide(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const double liquidityPrice
-)
-{
-   if(candleShift < 0)
-      return(false);
-
-   if(liquidityPrice <= 0.0)
-      return(false);
-
-   double candleHigh = iHigh(
-      symbol,
-      timeframe,
-      candleShift
-   );
-
-   double candleClose = iClose(
-      symbol,
-      timeframe,
-      candleShift
-   );
-
-   if(candleHigh <= 0.0 || candleClose <= 0.0)
-      return(false);
-
-   bool swept = candleHigh > liquidityPrice;
-   bool closedBackBelow = candleClose < liquidityPrice;
-
-   return(swept && closedBackBelow);
-}
-
-//+------------------------------------------------------------------+
-//| Sell-side liquidity swept and price closed back above level      |
-//|                                                                  |
-//| Useful for detecting a potential bullish liquidity raid before   |
-//| bullish displacement/MSS.                                        |
-//+------------------------------------------------------------------+
-
-bool SweptAndClosedAboveSellSide(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const double liquidityPrice
-)
-{
-   if(candleShift < 0)
-      return(false);
-
-   if(liquidityPrice <= 0.0)
-      return(false);
-
-   double candleLow = iLow(
-      symbol,
-      timeframe,
-      candleShift
-   );
-
-   double candleClose = iClose(
-      symbol,
-      timeframe,
-      candleShift
-   );
-
-   if(candleLow <= 0.0 || candleClose <= 0.0)
-      return(false);
-
-   bool swept = candleLow < liquidityPrice;
-   bool closedBackAbove = candleClose > liquidityPrice;
-
-   return(swept && closedBackAbove);
-}
-
-//====================================================================
-// PREVIOUS CANDLE SWEEP + REJECTION
-//====================================================================
-
-//+------------------------------------------------------------------+
-//| Previous high swept and candle closed back below                 |
-//+------------------------------------------------------------------+
-
-bool SweptPreviousHighAndClosedBackBelow(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift
-)
-{
-   double previousHigh = GetPreviousHigh(
-      symbol,
-      timeframe,
-      candleShift
-   );
-
-   if(previousHigh <= 0.0)
-      return(false);
-
-   return(
-      SweptAndClosedBelowBuySide(
+   double high =
+      iHigh(
          symbol,
          timeframe,
-         candleShift,
-         previousHigh
-      )
-   );
-}
+         signalShift
+      );
 
-//+------------------------------------------------------------------+
-//| Previous low swept and candle closed back above                  |
-//+------------------------------------------------------------------+
-
-bool SweptPreviousLowAndClosedBackAbove(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift
-)
-{
-   double previousLow = GetPreviousLow(
-      symbol,
-      timeframe,
-      candleShift
-   );
-
-   if(previousLow <= 0.0)
-      return(false);
-
-   return(
-      SweptAndClosedAboveSellSide(
+   double close =
+      iClose(
          symbol,
          timeframe,
-         candleShift,
-         previousLow
-      )
-   );
+         signalShift
+      );
+
+   if(high <= 0.0 || close <= 0.0)
+      return false;
+
+   // Price must actually trade above the liquidity level.
+   if(high <= level.price)
+      return false;
+
+   double sweepDistance =
+      high - level.price;
+
+   if(sweepDistance < minimumSweepDistance)
+      return false;
+
+   // A sweep requires rejection back below the liquidity level.
+   if(close >= level.price)
+      return false;
+
+   sweep.valid = true;
+
+   sweep.type = LIQUIDITY_BUY_SIDE;
+
+   sweep.liquidityPrice = level.price;
+
+   sweep.sweepExtreme = high;
+
+   sweep.liquidityShift = level.shift;
+
+   sweep.signalShift = signalShift;
+
+   sweep.liquidityTime = level.time;
+
+   sweep.signalTime =
+      iTime(
+         symbol,
+         timeframe,
+         signalShift
+      );
+
+   return true;
 }
 
+
 //====================================================================
-// LIQUIDITY DISTANCE
+// SELL-SIDE SWEEP
 //====================================================================
 
-//+------------------------------------------------------------------+
-//| Distance from candle high to liquidity level                     |
-//+------------------------------------------------------------------+
-
-double GetBuySideSweepDistance(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const double liquidityPrice
+// Detect a sell-side liquidity sweep.
+//
+// Price must:
+// 1. Trade below the liquidity level.
+// 2. Then close back above the liquidity level.
+bool DetectSellSideLiquiditySweep(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int signalShift,
+   int lookback,
+   int leftBars,
+   int rightBars,
+   double minimumSweepDistance,
+   LiquiditySweep &sweep
 )
 {
-   if(candleShift < 0 || liquidityPrice <= 0.0)
-      return(0.0);
+   ResetLiquiditySweep(sweep);
 
-   double high = iHigh(
+   if(signalShift < 1)
+      return false;
+
+   LiquidityLevel level;
+
+   if(!FindNearestSellSideLiquidity(
       symbol,
       timeframe,
-      candleShift
-   );
+      lookback,
+      leftBars,
+      rightBars,
+      level
+   ))
+   {
+      return false;
+   }
 
-   if(high <= 0.0)
-      return(0.0);
+   // The liquidity level must be older than the signal candle.
+   if(level.shift <= signalShift)
+      return false;
 
-   if(high <= liquidityPrice)
-      return(0.0);
+   double low =
+      iLow(
+         symbol,
+         timeframe,
+         signalShift
+      );
 
-   return(high - liquidityPrice);
+   double close =
+      iClose(
+         symbol,
+         timeframe,
+         signalShift
+      );
+
+   if(low <= 0.0 || close <= 0.0)
+      return false;
+
+   // Price must actually trade below the liquidity level.
+   if(low >= level.price)
+      return false;
+
+   double sweepDistance =
+      level.price - low;
+
+   if(sweepDistance < minimumSweepDistance)
+      return false;
+
+   // A sweep requires rejection back above the liquidity level.
+   if(close <= level.price)
+      return false;
+
+   sweep.valid = true;
+
+   sweep.type = LIQUIDITY_SELL_SIDE;
+
+   sweep.liquidityPrice = level.price;
+
+   sweep.sweepExtreme = low;
+
+   sweep.liquidityShift = level.shift;
+
+   sweep.signalShift = signalShift;
+
+   sweep.liquidityTime = level.time;
+
+   sweep.signalTime =
+      iTime(
+         symbol,
+         timeframe,
+         signalShift
+      );
+
+   return true;
 }
 
-//+------------------------------------------------------------------+
-//| Distance from candle low to liquidity level                      |
-//+------------------------------------------------------------------+
 
-double GetSellSideSweepDistance(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const double liquidityPrice
+//====================================================================
+// GENERIC LIQUIDITY SWEEP
+//====================================================================
+
+// Returns:
+//
+//  1 = buy-side sweep
+// -1 = sell-side sweep
+//  0 = no sweep
+//
+// This helper checks both directions.
+int DetectLiquiditySweep(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int signalShift,
+   int lookback,
+   int leftBars,
+   int rightBars,
+   double minimumSweepDistance,
+   LiquiditySweep &sweep
 )
 {
-   if(candleShift < 0 || liquidityPrice <= 0.0)
-      return(0.0);
+   ResetLiquiditySweep(sweep);
 
-   double low = iLow(
+   LiquiditySweep buySideSweep;
+
+   if(DetectBuySideLiquiditySweep(
       symbol,
       timeframe,
-      candleShift
-   );
+      signalShift,
+      lookback,
+      leftBars,
+      rightBars,
+      minimumSweepDistance,
+      buySideSweep
+   ))
+   {
+      sweep = buySideSweep;
 
-   if(low <= 0.0)
-      return(0.0);
+      return 1;
+   }
 
-   if(low >= liquidityPrice)
-      return(0.0);
 
-   return(liquidityPrice - low);
-}
+   LiquiditySweep sellSideSweep;
 
-//====================================================================
-// LIQUIDITY INVALIDATION
-//====================================================================
-
-//+------------------------------------------------------------------+
-//| Determine whether buy-side liquidity has been broken             |
-//| and accepted above.                                               |
-//+------------------------------------------------------------------+
-
-bool IsBuySideLiquidityBroken(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const double liquidityPrice
-)
-{
-   if(candleShift < 0 || liquidityPrice <= 0.0)
-      return(false);
-
-   double candleClose = iClose(
+   if(DetectSellSideLiquiditySweep(
       symbol,
       timeframe,
-      candleShift
-   );
+      signalShift,
+      lookback,
+      leftBars,
+      rightBars,
+      minimumSweepDistance,
+      sellSideSweep
+   ))
+   {
+      sweep = sellSideSweep;
 
-   if(candleClose <= 0.0)
-      return(false);
+      return -1;
+   }
 
-   return(candleClose > liquidityPrice);
+   return 0;
 }
 
-//+------------------------------------------------------------------+
-//| Determine whether sell-side liquidity has been broken            |
-//| and accepted below.                                               |
-//+------------------------------------------------------------------+
-
-bool IsSellSideLiquidityBroken(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const double liquidityPrice
-)
-{
-   if(candleShift < 0 || liquidityPrice <= 0.0)
-      return(false);
-
-   double candleClose = iClose(
-      symbol,
-      timeframe,
-      candleShift
-   );
-
-   if(candleClose <= 0.0)
-      return(false);
-
-   return(candleClose < liquidityPrice);
-}
 
 //====================================================================
-// LIQUIDITY TYPE HELPERS
+// LIQUIDITY RELATIONSHIP HELPERS
 //====================================================================
 
-//+------------------------------------------------------------------+
-//| Check whether a liquidity level is usable                        |
-//+------------------------------------------------------------------+
-
-bool IsValidLiquidityLevel(
-   const LiquidityLevel &level
+// Determine whether price is above a liquidity level.
+bool IsAboveLiquidity(
+   double price,
+   LiquidityLevel &level
 )
 {
    if(!level.valid)
-      return(false);
+      return false;
 
-   if(level.price <= 0.0)
-      return(false);
-
-   if(level.shift < 0)
-      return(false);
-
-   if(level.time <= 0)
-      return(false);
-
-   return(true);
+   return price > level.price;
 }
 
-//+------------------------------------------------------------------+
-//| Compare two liquidity levels                                     |
-//+------------------------------------------------------------------+
 
-bool AreLiquidityLevelsEqual(
-   const LiquidityLevel &first,
-   const LiquidityLevel &second,
-   const double tolerance
+// Determine whether price is below a liquidity level.
+bool IsBelowLiquidity(
+   double price,
+   LiquidityLevel &level
 )
 {
-   if(!IsValidLiquidityLevel(first))
-      return(false);
+   if(!level.valid)
+      return false;
 
-   if(!IsValidLiquidityLevel(second))
-      return(false);
+   return price < level.price;
+}
+
+
+// Determine whether price is at/near a liquidity level.
+//
+// The tolerance is expressed in price units.
+bool IsNearLiquidity(
+   double price,
+   LiquidityLevel &level,
+   double tolerance
+)
+{
+   if(!level.valid)
+      return false;
 
    if(tolerance < 0.0)
-      return(false);
+      tolerance = 0.0;
 
-   return(
-      MathAbs(first.price - second.price) <= tolerance
-   );
+   return MathAbs(price - level.price) <= tolerance;
 }
 
-//+------------------------------------------------------------------+
-//| Return the distance between liquidity levels                     |
-//+------------------------------------------------------------------+
 
-double GetLiquidityLevelDistance(
-   const LiquidityLevel &first,
-   const LiquidityLevel &second
+//====================================================================
+// SWEEP TYPE HELPERS
+//====================================================================
+
+bool IsBuySideSweep(
+   LiquiditySweep &sweep
 )
 {
-   if(!IsValidLiquidityLevel(first))
-      return(0.0);
+   return
+      sweep.valid &&
+      sweep.type == LIQUIDITY_BUY_SIDE;
+}
 
-   if(!IsValidLiquidityLevel(second))
-      return(0.0);
 
-   return(
-      MathAbs(first.price - second.price)
+bool IsSellSideSweep(
+   LiquiditySweep &sweep
+)
+{
+   return
+      sweep.valid &&
+      sweep.type == LIQUIDITY_SELL_SIDE;
+}
+
+
+//====================================================================
+// TEXT HELPERS
+//====================================================================
+
+string LiquidityTypeToString(
+   ENUM_LIQUIDITY_TYPE type
+)
+{
+   switch(type)
+   {
+      case LIQUIDITY_BUY_SIDE:
+         return "BUY-SIDE LIQUIDITY";
+
+      case LIQUIDITY_SELL_SIDE:
+         return "SELL-SIDE LIQUIDITY";
+
+      default:
+         return "NONE";
+   }
+}
+
+
+string LiquiditySweepDescription(
+   LiquiditySweep &sweep
+)
+{
+   if(!sweep.valid)
+      return "INVALID LIQUIDITY SWEEP";
+
+   return StringFormat(
+      "%s | Liquidity=%f | Extreme=%f | SignalShift=%d",
+      LiquidityTypeToString(sweep.type),
+      sweep.liquidityPrice,
+      sweep.sweepExtreme,
+      sweep.signalShift
    );
 }
 
-//====================================================================
-// END
-//====================================================================
 
+//+------------------------------------------------------------------+
 #endif
+//+------------------------------------------------------------------+
