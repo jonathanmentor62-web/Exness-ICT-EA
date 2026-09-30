@@ -1,13 +1,13 @@
 //+------------------------------------------------------------------+
 //| MarketStructure.mqh                                              |
-//| H4 market-structure detection for Exness ICT EA                 |
+//| Market-structure detection for Exness ICT EA                    |
 //+------------------------------------------------------------------+
 #ifndef __EXNESS_ICT_MARKET_STRUCTURE_MQH__
 #define __EXNESS_ICT_MARKET_STRUCTURE_MQH__
 
-//-------------------------------------------------------------------
-// Check whether a candle is a confirmed swing high.
-//-------------------------------------------------------------------
+//+------------------------------------------------------------------+
+//| Check whether a candle is a confirmed swing high                |
+//+------------------------------------------------------------------+
 bool IsSwingHigh(
    const string symbol,
    const ENUM_TIMEFRAMES timeframe,
@@ -19,19 +19,25 @@ bool IsSwingHigh(
    if(shift <= rightBars)
       return(false);
 
+   int totalBars = Bars(symbol, timeframe);
+
+   if(totalBars <= 0)
+      return(false);
+
+   if(shift + leftBars >= totalBars)
+      return(false);
+
    double centerHigh = iHigh(symbol, timeframe, shift);
 
    if(centerHigh <= 0.0)
       return(false);
 
-   // Older candles
    for(int i = 1; i <= leftBars; i++)
    {
       if(centerHigh <= iHigh(symbol, timeframe, shift + i))
          return(false);
    }
 
-   // More recent candles
    for(int i = 1; i <= rightBars; i++)
    {
       if(centerHigh <= iHigh(symbol, timeframe, shift - i))
@@ -41,9 +47,9 @@ bool IsSwingHigh(
    return(true);
 }
 
-//-------------------------------------------------------------------
-// Check whether a candle is a confirmed swing low.
-//-------------------------------------------------------------------
+//+------------------------------------------------------------------+
+//| Check whether a candle is a confirmed swing low                 |
+//+------------------------------------------------------------------+
 bool IsSwingLow(
    const string symbol,
    const ENUM_TIMEFRAMES timeframe,
@@ -55,19 +61,25 @@ bool IsSwingLow(
    if(shift <= rightBars)
       return(false);
 
+   int totalBars = Bars(symbol, timeframe);
+
+   if(totalBars <= 0)
+      return(false);
+
+   if(shift + leftBars >= totalBars)
+      return(false);
+
    double centerLow = iLow(symbol, timeframe, shift);
 
    if(centerLow <= 0.0)
       return(false);
 
-   // Older candles
    for(int i = 1; i <= leftBars; i++)
    {
       if(centerLow >= iLow(symbol, timeframe, shift + i))
          return(false);
    }
 
-   // More recent candles
    for(int i = 1; i <= rightBars; i++)
    {
       if(centerLow >= iLow(symbol, timeframe, shift - i))
@@ -77,9 +89,9 @@ bool IsSwingLow(
    return(true);
 }
 
-//-------------------------------------------------------------------
-// Find the most recent confirmed swing high.
-//-------------------------------------------------------------------
+//+------------------------------------------------------------------+
+//| Find the most recent confirmed swing high                       |
+//+------------------------------------------------------------------+
 int FindRecentSwingHigh(
    const string symbol,
    const ENUM_TIMEFRAMES timeframe,
@@ -89,18 +101,39 @@ int FindRecentSwingHigh(
    const int rightBars
 )
 {
-   for(int shift = startShift; shift <= startShift + lookback; shift++)
+   if(lookback <= 0)
+      return(-1);
+
+   int totalBars = Bars(symbol, timeframe);
+
+   if(totalBars <= 0)
+      return(-1);
+
+   int lastShift = MathMin(
+      startShift + lookback,
+      totalBars - leftBars - 1
+   );
+
+   for(int shift = startShift; shift <= lastShift; shift++)
    {
-      if(IsSwingHigh(symbol, timeframe, shift, leftBars, rightBars))
+      if(IsSwingHigh(
+         symbol,
+         timeframe,
+         shift,
+         leftBars,
+         rightBars
+      ))
+      {
          return(shift);
+      }
    }
 
    return(-1);
 }
 
-//-------------------------------------------------------------------
-// Find the most recent confirmed swing low.
-//-------------------------------------------------------------------
+//+------------------------------------------------------------------+
+//| Find the most recent confirmed swing low                        |
+//+------------------------------------------------------------------+
 int FindRecentSwingLow(
    const string symbol,
    const ENUM_TIMEFRAMES timeframe,
@@ -110,18 +143,39 @@ int FindRecentSwingLow(
    const int rightBars
 )
 {
-   for(int shift = startShift; shift <= startShift + lookback; shift++)
+   if(lookback <= 0)
+      return(-1);
+
+   int totalBars = Bars(symbol, timeframe);
+
+   if(totalBars <= 0)
+      return(-1);
+
+   int lastShift = MathMin(
+      startShift + lookback,
+      totalBars - leftBars - 1
+   );
+
+   for(int shift = startShift; shift <= lastShift; shift++)
    {
-      if(IsSwingLow(symbol, timeframe, shift, leftBars, rightBars))
+      if(IsSwingLow(
+         symbol,
+         timeframe,
+         shift,
+         leftBars,
+         rightBars
+      ))
+      {
          return(shift);
+      }
    }
 
    return(-1);
 }
 
-//-------------------------------------------------------------------
-// Get the price of the most recent confirmed swing high.
-//-------------------------------------------------------------------
+//+------------------------------------------------------------------+
+//| Get most recent confirmed swing high price                      |
+//+------------------------------------------------------------------+
 double GetRecentSwingHigh(
    const string symbol,
    const ENUM_TIMEFRAMES timeframe,
@@ -145,9 +199,9 @@ double GetRecentSwingHigh(
    return(iHigh(symbol, timeframe, shift));
 }
 
-//-------------------------------------------------------------------
-// Get the price of the most recent confirmed swing low.
-//-------------------------------------------------------------------
+//+------------------------------------------------------------------+
+//| Get most recent confirmed swing low price                       |
+//+------------------------------------------------------------------+
 double GetRecentSwingLow(
    const string symbol,
    const ENUM_TIMEFRAMES timeframe,
