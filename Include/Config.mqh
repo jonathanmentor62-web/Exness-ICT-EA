@@ -1,18 +1,15 @@
 //+------------------------------------------------------------------+
 //| Config.mqh                                                       |
-//| Central configuration for the Exness ICT EA                     |
+//| Central configuration for Exness ICT EA                          |
 //+------------------------------------------------------------------+
 #ifndef __EXNESS_ICT_CONFIG_MQH__
 #define __EXNESS_ICT_CONFIG_MQH__
 
 //====================================================================
-// TIMEFRAMES
+// PRIMARY TIMEFRAMES
 //====================================================================
 
-//--- Primary market-structure timeframe
 #define ICT_PRIMARY_TF              PERIOD_H4
-
-//--- Confirmation / execution timeframe
 #define ICT_CONFIRM_TF              PERIOD_M15
 
 
@@ -20,15 +17,13 @@
 // RISK MANAGEMENT
 //====================================================================
 
-//--- Maximum planned monetary risk per trade
-//--- Position sizing must calculate volume from SL distance.
-//--- If minimum broker volume exceeds this risk, trade is rejected.
+// Maximum planned monetary risk per trade.
 #define ICT_MAX_RISK_MONEY          2.00
 
-//--- Maximum number of EA positions allowed at the same time
+// Maximum number of open positions across the EA.
 #define ICT_MAX_TOTAL_POSITIONS     3
 
-//--- Maximum number of positions allowed on one symbol
+// Maximum positions allowed on one symbol.
 #define ICT_MAX_SYMBOL_POSITIONS    1
 
 
@@ -36,7 +31,6 @@
 // EA IDENTIFICATION
 //====================================================================
 
-//--- Unique magic number for this EA
 #define ICT_MAGIC_NUMBER            26093001
 
 
@@ -44,15 +38,13 @@
 // EXECUTION SAFETY
 //====================================================================
 
-//--- Maximum allowed spread in broker points
+// Maximum allowed spread in broker points.
 #define ICT_MAX_SPREAD_PTS          50
 
-//--- Maximum allowed execution deviation in broker points
+// Maximum execution deviation/slippage in broker points.
 #define ICT_MAX_SLIPPAGE_PTS        20
 
-//--- Minimum distance from current price for protective levels
-//--- Expressed in points and additionally checked against
-//--- SYMBOL_TRADE_STOPS_LEVEL.
+// Minimum stop distance in broker points.
 #define ICT_MIN_STOP_DISTANCE_PTS   10
 
 
@@ -60,11 +52,11 @@
 // MARKET STRUCTURE
 //====================================================================
 
-//--- Bars on each side used to confirm a swing
+// Number of candles on each side used to confirm a swing.
 #define ICT_SWING_LEFT              2
 #define ICT_SWING_RIGHT             2
 
-//--- Default structural lookback
+// Maximum historical candles scanned for structure.
 #define ICT_STRUCTURE_LOOKBACK      100
 
 
@@ -72,13 +64,10 @@
 // DISPLACEMENT
 //====================================================================
 
-//--- Minimum candle-body / total-range ratio
+// Minimum candle body/range ratio required for displacement.
 //
 // Example:
-//   0.60 = body must represent at least 60% of candle range.
-//
-// This is a filter, not a guarantee of institutional displacement.
-// Later modules can add additional displacement requirements.
+// 0.60 = candle body must be at least 60% of the entire candle range.
 #define ICT_MIN_BODY_RATIO          0.60
 
 
@@ -86,40 +75,38 @@
 // LIQUIDITY
 //====================================================================
 
-//--- Minimum distance, in points, for considering a sweep meaningful.
+// Minimum sweep distance in broker points.
 //
-// This prevents tiny one-point penetrations from automatically
-// qualifying as meaningful liquidity sweeps on instruments where
-// broker pricing makes such moves common.
+// 0 means any penetration of the liquidity level is acceptable.
 #define ICT_MIN_SWEEP_DISTANCE_PTS  0
 
 
 //====================================================================
-// SETUP MANAGEMENT
+// H4 SETUP LIFETIME
 //====================================================================
 
-//--- Maximum number of H4 bars for an armed setup to remain valid
+// Maximum number of H4 bars for an H4 setup to remain active.
 #define ICT_SETUP_MAX_BARS          12
 
-//--- Maximum number of M15 bars allowed for confirmation after
-//--- an H4 setup becomes armed.
-//
-// 16 M15 bars = 4 hours.
+
+//====================================================================
+// M15 CONFIRMATION LIFETIME
+//====================================================================
+
+// Maximum number of M15 bars allowed for confirmation after H4 setup.
 #define ICT_M15_CONFIRM_MAX_BARS    16
 
 
 //====================================================================
-// FVG
+// FAIR VALUE GAP
 //====================================================================
 
-//--- Require a valid three-candle imbalance structure
+// M15 confirmation must contain a directional FVG.
 #define ICT_REQUIRE_FVG             true
 
-//--- Minimum FVG size in points
+// Minimum FVG size in broker points.
 //
-// Set to zero initially so the detector is not artificially
-// restrictive across EURUSD, XAUUSD and other symbols.
-// Symbol-specific filtering can be added later.
+// 0 means no additional minimum-size filter.
 #define ICT_MIN_FVG_SIZE_PTS        0
 
 
@@ -127,61 +114,63 @@
 // ORDER BLOCK
 //====================================================================
 
-//--- Enable Order Block detection in the confirmation pipeline
+// Enable Order Block detection as confluence.
 #define ICT_ENABLE_ORDER_BLOCK      true
 
-//--- Maximum candles to search backward for the relevant
-//--- Order Block before the displacement move.
+// Number of candles searched when looking for an Order Block.
 #define ICT_OB_LOOKBACK             10
 
 
 //====================================================================
-// TARGET MANAGEMENT
+// REWARD / RISK
 //====================================================================
 
-//--- Require the target to provide at least this theoretical
-//--- reward/risk before an entry can be accepted.
+// Minimum planned reward-to-risk ratio for the future
+// execution engine.
 //
-// This is a validation threshold, not a promise of profitability.
+// 2.0 = minimum 2:1 reward-to-risk.
 #define ICT_MIN_REWARD_RISK         2.0
 
 
 //====================================================================
-// ACCOUNT / TRADE SAFETY
+// POSITION SAFETY
 //====================================================================
 
-//--- Do not open another position if an existing EA position
-//--- already exists for the same symbol.
+// Prevent multiple EA positions on the same symbol.
 #define ICT_BLOCK_DUPLICATE_SYMBOL  true
 
-//--- Prevent opposite-direction positions on the same symbol.
+// Prevent opening an opposite-direction position on a symbol
+// that already has an EA position.
 #define ICT_BLOCK_OPPOSITE_SYMBOL   true
 
-//--- Maximum simultaneous EA positions.
+// Maximum number of EA positions.
 #define ICT_MAX_OPEN_TRADES         3
 
 
 //====================================================================
-// DEVELOPMENT SAFETY
+// TRADING DEFAULT
 //====================================================================
 
-//--- Trading is deliberately disabled during development.
-//
-// DO NOT change this to true until compilation, backtesting,
-// forward testing and execution validation have been completed.
+// IMPORTANT:
+// Trading remains disabled during development/testing.
 #define ICT_TRADING_DEFAULT_ENABLED false
 
 
 //====================================================================
-// DATA VALIDATION
+// DATA REQUIREMENTS
 //====================================================================
 
-//--- Minimum bars required before structural analysis
+// Minimum amount of historical data required before analysis.
 #define ICT_MIN_HISTORY_BARS        100
 
-//--- Number of digits used when comparing floating-point prices.
-//--- Actual symbol digits are obtained dynamically from MT5.
+
+//====================================================================
+// PRICE COMPARISON
+//====================================================================
+
+// Small price tolerance used when comparing liquidity levels.
 #define ICT_PRICE_EPSILON_POINTS    1
 
 
 #endif
+//+------------------------------------------------------------------+
