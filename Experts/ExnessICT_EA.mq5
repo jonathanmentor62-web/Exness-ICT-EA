@@ -3,28 +3,33 @@
 //|                     Exness ICT Automated Trading System          |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "0.10"
+#property version   "0.20"
 #property description "H4 ICT framework with M15 confirmation."
-#property description "Trading is disabled in this foundation build."
+#property description "Trading remains disabled during development."
 
 #include <Trade/Trade.mqh>
+#include "../Include/Config.mqh"
+#include "../Include/MarketStructure.mqh"
 
 CTrade Trade;
 
-//--- Trading configuration
-input ENUM_TIMEFRAMES InpPrimaryTF      = PERIOD_H4;
-input ENUM_TIMEFRAMES InpConfirmTF      = PERIOD_M15;
+//--- User configuration
+input ENUM_TIMEFRAMES InpPrimaryTF     = ICT_PRIMARY_TF;
+input ENUM_TIMEFRAMES InpConfirmTF     = ICT_CONFIRM_TF;
+input double          InpMaxRiskMoney  = ICT_MAX_RISK_MONEY;
 
-//--- Risk configuration
-input double          InpMaxRiskMoney   = 2.00;
+input ulong           InpMagicNumber   = ICT_MAGIC_NUMBER;
+input int             InpMaxSpreadPts = ICT_MAX_SPREAD_PTS;
+input int             InpDeviationPts  = ICT_MAX_SLIPPAGE_PTS;
 
-//--- Execution configuration
-input ulong           InpMagicNumber    = 26093001;
-input int             InpMaxSpreadPts   = 50;
-input int             InpDeviationPts   = 20;
+//--- Safety switch
+input bool            InpEnableTrading = false;
 
-//--- Safety
-input bool            InpEnableTrading  = false;
+//--- Structure scan
+input int             InpStructureLookback = 100;
+
+//--- Prevent repeated processing of the same H4 candle
+datetime g_lastPrimaryBar = 0;
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                            |
@@ -35,10 +40,11 @@ int OnInit()
    Trade.SetDeviationInPoints(InpDeviationPts);
 
    Print("==========================================");
-   Print("Exness ICT EA initialized");
-   Print("Primary timeframe: H4");
-   Print("Confirmation timeframe: M15");
-   Print("Maximum planned risk: ", InpMaxRiskMoney);
+   Print("Exness ICT EA v0.20 initialized");
+   Print("Symbol: ", _Symbol);
+   Print("Primary timeframe: ", EnumToString(InpPrimaryTF));
+   Print("Confirmation timeframe: ", EnumToString(InpConfirmTF));
+   Print("Maximum planned risk: ", DoubleToString(InpMaxRiskMoney, 2));
    Print("Trading enabled: ", InpEnableTrading);
    Print("==========================================");
 
@@ -58,30 +64,89 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   //===============================================================
-   // SAFETY: Trading remains disabled in the foundation build.
-   //===============================================================
+   //--- Only process a newly closed/formed primary candle once.
+   datetime primaryBar = iTime(_Symbol, InpPrimaryTF, 0);
+
+   if(primaryBar <= 0)
+      return;
+
+   if(primaryBar == g_lastPrimaryBar)
+      return;
+
+   g_lastPrimaryBar = primaryBar;
+
+   //--- Development diagnostics.
+   AnalyzePrimaryStructure(_Symbol);
+
+   //--- Trading is intentionally disabled.
    if(!InpEnableTrading)
       return;
 
-   //===============================================================
-   // Future processing pipeline:
+   //================================================================
+   // FUTURE LIVE PIPELINE
    //
-   // 1. Scan eligible Exness symbols
-   // 2. Analyze H4 market structure
-   // 3. Detect liquidity
-   // 4. Detect liquidity sweep
-   // 5. Detect displacement
-   // 6. Detect MSS / BOS
-   // 7. Detect FVG / Order Block
-   // 8. Confirm setup on M15
-   // 9. Calculate structural stop loss
-   // 10. Calculate volume for <= $2 planned risk
-   // 11. Find logical liquidity target
-   // 12. Apply safety filters
-   // 13. Execute trade
-   // 14. Manage open position
-   //===============================================================
+   // 1. H4 bias
+   // 2. H4 liquidity
+   // 3. Liquidity sweep
+   // 4. Displacement
+   // 5. H4/M15 MSS
+   // 6. FVG / Order Block
+   // 7. M15 confirmation
+   // 8. Structural SL
+   // 9. <= $2 risk sizing
+   // 10. Liquidity TP
+   // 11. Safety gates
+   // 12. Execution
+   // 13. Position management
+   //================================================================
+}
+
+//+------------------------------------------------------------------+
+//| Analyze current H4 structure                                     |
+//+------------------------------------------------------------------+
+void AnalyzePrimaryStructure(const string symbol)
+{
+   if(!IsSymbolTradable(symbol))
+   {
+      Print("[STRUCTURE] Symbol not tradable: ", symbol);
+      return;
+   }
+
+   int swingHighShift = FindRecentSwingHigh(
+      symbol,
+      InpPrimaryTF,
+      ICT_SWING_RIGHT + 1,
+      InpStructureLookback,
+      ICT_SWING_LEFT,
+      ICT_SWING_RIGHT
+   );
+
+   int swingLowShift = FindRecentSwingLow(
+      symbol,
+      InpPrimaryTF,
+      ICT_SWING_RIGHT + 1,
+      InpStructureLookback,
+      ICT_SWING_LEFT,
+      ICT_SWING_RIGHT
+   );
+
+   double swingHigh = 0.0;
+   double swingLow  = 0.0;
+
+   if(swingHighShift >= 0)
+      swingHigh = iHigh(symbol, InpPrimaryTF, swingHighShift);
+
+   if(swingLowShift >= 0)
+      swingLow = iLow(symbol, InpPrimaryTF, swingLowShift);
+
+   Print(
+      "[STRUCTURE] ",
+      symbol,
+      " | H4 swing high=",
+      DoubleToString(swingHigh, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)),
+      " | H4 swing low=",
+      DoubleToString(swingLow, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS))
+   );
 }
 
 //+------------------------------------------------------------------+
@@ -98,7 +163,7 @@ bool IsSpreadAcceptable(const string symbol)
 }
 
 //+------------------------------------------------------------------+
-//| Calculate maximum permitted risk                                  |
+//| Maximum permitted planned risk                                   |
 //+------------------------------------------------------------------+
 double GetMaxRiskMoney()
 {
@@ -106,18 +171,18 @@ double GetMaxRiskMoney()
 }
 
 //+------------------------------------------------------------------+
-//| Check whether symbol is available                                |
+//| Check whether symbol is available for trading                    |
 //+------------------------------------------------------------------+
 bool IsSymbolTradable(const string symbol)
 {
    if(!SymbolSelect(symbol, true))
       return(false);
 
-   long trade_mode = 0;
+   long tradeMode = 0;
 
-   if(!SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE, trade_mode))
+   if(!SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE, tradeMode))
       return(false);
 
-   return(trade_mode != SYMBOL_TRADE_MODE_DISABLED);
+   return(tradeMode != SYMBOL_TRADE_MODE_DISABLED);
 }
 //+------------------------------------------------------------------+
