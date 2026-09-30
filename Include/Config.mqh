@@ -10,7 +10,7 @@
 #define ICT_ENTRY_TF                PERIOD_M5
 
 //====================================================================
-// RISK MANAGEMENT
+// RISK
 //====================================================================
 
 #define ICT_RISK_PERCENT            1.0
@@ -18,12 +18,8 @@
 #define ICT_MAX_TOTAL_RISK_PERCENT  3.0
 
 //====================================================================
-// POSITION / PORTFOLIO LIMITS
+// ACCOUNT / EA
 //====================================================================
-
-#define ICT_MAX_TOTAL_POSITIONS     3
-#define ICT_MAX_SYMBOL_POSITIONS    1
-#define ICT_MAX_OPEN_TRADES         3
 
 #define ICT_MAGIC_NUMBER            26093001
 
@@ -36,13 +32,20 @@
 #define ICT_MIN_STOP_DISTANCE_PTS   10
 
 //====================================================================
+// POSITION LIMITS
+//====================================================================
+
+#define ICT_MAX_TOTAL_POSITIONS     3
+#define ICT_MAX_SYMBOL_POSITIONS    1
+#define ICT_MAX_OPEN_TRADES         3
+
+//====================================================================
 // MARKET STRUCTURE
 //====================================================================
 
 #define ICT_SWING_LEFT              2
 #define ICT_SWING_RIGHT             2
 #define ICT_STRUCTURE_LOOKBACK      100
-
 #define ICT_MIN_BODY_RATIO          0.60
 
 //====================================================================
@@ -57,6 +60,7 @@
 
 #define ICT_SETUP_MAX_BARS          12
 #define ICT_M15_CONFIRM_MAX_BARS    16
+#define ICT_M5_CONFIRM_MAX_BARS     8
 
 //====================================================================
 // FAIR VALUE GAP
@@ -79,20 +83,20 @@
 #define ICT_MIN_REWARD_RISK         2.0
 
 //====================================================================
-// DUPLICATE / OPPOSITE POSITION PROTECTION
+// DUPLICATE / OPPOSITE PROTECTION
 //====================================================================
 
 #define ICT_BLOCK_DUPLICATE_SYMBOL  true
 #define ICT_BLOCK_OPPOSITE_SYMBOL   true
 
 //====================================================================
-// TRADING STATE
+// TRADING
 //====================================================================
 
 #define ICT_TRADING_DEFAULT_ENABLED false
 
 //====================================================================
-// DATA VALIDATION
+// DATA
 //====================================================================
 
 #define ICT_MIN_HISTORY_BARS        100
