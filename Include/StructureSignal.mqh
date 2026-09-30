@@ -5,9 +5,6 @@
 #ifndef __EXNESS_ICT_STRUCTURE_SIGNAL_MQH__
 #define __EXNESS_ICT_STRUCTURE_SIGNAL_MQH__
 
-//+------------------------------------------------------------------+
-//| Signal information                                               |
-//+------------------------------------------------------------------+
 struct StructureSignal
 {
    bool     bullishDisplacement;
@@ -26,7 +23,7 @@ struct StructureSignal
 };
 
 //+------------------------------------------------------------------+
-//| Initialize signal structure                                     |
+//| Reset signal                                                     |
 //+------------------------------------------------------------------+
 void ResetStructureSignal(StructureSignal &signal)
 {
@@ -46,8 +43,7 @@ void ResetStructureSignal(StructureSignal &signal)
 }
 
 //+------------------------------------------------------------------+
-//| Candle body ratio                                                |
-//| Body / total candle range                                        |
+//| Candle body/range ratio                                          |
 //+------------------------------------------------------------------+
 double GetBodyRatio(
    const string symbol,
@@ -55,7 +51,7 @@ double GetBodyRatio(
    const int shift
 )
 {
-   if(shift < 0)
+   if(shift < 1)
       return(0.0);
 
    double open  = iOpen(symbol, timeframe, shift);
@@ -63,8 +59,13 @@ double GetBodyRatio(
    double high  = iHigh(symbol, timeframe, shift);
    double low   = iLow(symbol, timeframe, shift);
 
-   if(open <= 0.0 || close <= 0.0 || high <= 0.0 || low <= 0.0)
+   if(open <= 0.0 ||
+      close <= 0.0 ||
+      high <= 0.0 ||
+      low <= 0.0)
+   {
       return(0.0);
+   }
 
    double range = high - low;
 
@@ -75,7 +76,7 @@ double GetBodyRatio(
 }
 
 //+------------------------------------------------------------------+
-//| Check bullish candle                                             |
+//| Bullish candle                                                   |
 //+------------------------------------------------------------------+
 bool IsBullishCandle(
    const string symbol,
@@ -83,12 +84,17 @@ bool IsBullishCandle(
    const int shift
 )
 {
-   return(iClose(symbol, timeframe, shift) >
-          iOpen(symbol, timeframe, shift));
+   if(shift < 1)
+      return(false);
+
+   return(
+      iClose(symbol, timeframe, shift) >
+      iOpen(symbol, timeframe, shift)
+   );
 }
 
 //+------------------------------------------------------------------+
-//| Check bearish candle                                             |
+//| Bearish candle                                                   |
 //+------------------------------------------------------------------+
 bool IsBearishCandle(
    const string symbol,
@@ -96,12 +102,17 @@ bool IsBearishCandle(
    const int shift
 )
 {
-   return(iClose(symbol, timeframe, shift) <
-          iOpen(symbol, timeframe, shift));
+   if(shift < 1)
+      return(false);
+
+   return(
+      iClose(symbol, timeframe, shift) <
+      iOpen(symbol, timeframe, shift)
+   );
 }
 
 //+------------------------------------------------------------------+
-//| Check bullish displacement                                      |
+//| Bullish displacement                                             |
 //+------------------------------------------------------------------+
 bool IsBullishDisplacement(
    const string symbol,
@@ -112,17 +123,14 @@ bool IsBullishDisplacement(
    if(!IsBullishCandle(symbol, timeframe, shift))
       return(false);
 
-   double bodyRatio = GetBodyRatio(
-      symbol,
-      timeframe,
-      shift
+   return(
+      GetBodyRatio(symbol, timeframe, shift) >=
+      ICT_MIN_BODY_RATIO
    );
-
-   return(bodyRatio >= ICT_MIN_BODY_RATIO);
 }
 
 //+------------------------------------------------------------------+
-//| Check bearish displacement                                      |
+//| Bearish displacement                                             |
 //+------------------------------------------------------------------+
 bool IsBearishDisplacement(
    const string symbol,
@@ -133,30 +141,28 @@ bool IsBearishDisplacement(
    if(!IsBearishCandle(symbol, timeframe, shift))
       return(false);
 
-   double bodyRatio = GetBodyRatio(
-      symbol,
-      timeframe,
-      shift
+   return(
+      GetBodyRatio(symbol, timeframe, shift) >=
+      ICT_MIN_BODY_RATIO
    );
-
-   return(bodyRatio >= ICT_MIN_BODY_RATIO);
 }
 
 //+------------------------------------------------------------------+
-//| Detect bullish MSS                                              |
-//| Closed candle must break the most recent confirmed swing high.  |
+//| Detect bullish structural break                                  |
 //+------------------------------------------------------------------+
-bool DetectBullishMSS(
+bool DetectBullishStructureBreak(
    const string symbol,
    const ENUM_TIMEFRAMES timeframe,
    const int candleShift,
    const int lookback,
    const int leftBars,
    const int rightBars,
-   double &brokenLevel
+   double &brokenLevel,
+   ENUM_STRUCTURE_DIRECTION &previousStructure
 )
 {
    brokenLevel = 0.0;
+   previousStructure = STRUCTURE_UNKNOWN;
 
    if(candleShift < 1)
       return(false);
@@ -191,26 +197,36 @@ bool DetectBullishMSS(
    if(candleClose <= swingHigh)
       return(false);
 
+   previousStructure = GetStructureDirection(
+      symbol,
+      timeframe,
+      candleShift,
+      lookback,
+      leftBars,
+      rightBars
+   );
+
    brokenLevel = swingHigh;
 
    return(true);
 }
 
 //+------------------------------------------------------------------+
-//| Detect bearish MSS                                               |
-//| Closed candle must break the most recent confirmed swing low.   |
+//| Detect bearish structural break                                  |
 //+------------------------------------------------------------------+
-bool DetectBearishMSS(
+bool DetectBearishStructureBreak(
    const string symbol,
    const ENUM_TIMEFRAMES timeframe,
    const int candleShift,
    const int lookback,
    const int leftBars,
    const int rightBars,
-   double &brokenLevel
+   double &brokenLevel,
+   ENUM_STRUCTURE_DIRECTION &previousStructure
 )
 {
    brokenLevel = 0.0;
+   previousStructure = STRUCTURE_UNKNOWN;
 
    if(candleShift < 1)
       return(false);
@@ -245,14 +261,89 @@ bool DetectBearishMSS(
    if(candleClose >= swingLow)
       return(false);
 
+   previousStructure = GetStructureDirection(
+      symbol,
+      timeframe,
+      candleShift,
+      lookback,
+      leftBars,
+      rightBars
+   );
+
    brokenLevel = swingLow;
 
    return(true);
 }
 
 //+------------------------------------------------------------------+
-//| Detect bullish BOS                                               |
-//| Structural bullish continuation through a confirmed swing high. |
+//| Bullish MSS                                                      |
+//| Bearish structure -> break of swing high                        |
+//+------------------------------------------------------------------+
+bool DetectBullishMSS(
+   const string symbol,
+   const ENUM_TIMEFRAMES timeframe,
+   const int candleShift,
+   const int lookback,
+   const int leftBars,
+   const int rightBars,
+   double &brokenLevel
+)
+{
+   ENUM_STRUCTURE_DIRECTION previousStructure;
+
+   if(!DetectBullishStructureBreak(
+      symbol,
+      timeframe,
+      candleShift,
+      lookback,
+      leftBars,
+      rightBars,
+      brokenLevel,
+      previousStructure
+   ))
+   {
+      return(false);
+   }
+
+   return(previousStructure == STRUCTURE_BEARISH);
+}
+
+//+------------------------------------------------------------------+
+//| Bearish MSS                                                      |
+//| Bullish structure -> break of swing low                         |
+//+------------------------------------------------------------------+
+bool DetectBearishMSS(
+   const string symbol,
+   const ENUM_TIMEFRAMES timeframe,
+   const int candleShift,
+   const int lookback,
+   const int leftBars,
+   const int rightBars,
+   double &brokenLevel
+)
+{
+   ENUM_STRUCTURE_DIRECTION previousStructure;
+
+   if(!DetectBearishStructureBreak(
+      symbol,
+      timeframe,
+      candleShift,
+      lookback,
+      leftBars,
+      rightBars,
+      brokenLevel,
+      previousStructure
+   ))
+   {
+      return(false);
+   }
+
+   return(previousStructure == STRUCTURE_BULLISH);
+}
+
+//+------------------------------------------------------------------+
+//| Bullish BOS                                                      |
+//| Bullish structure -> break of swing high                        |
 //+------------------------------------------------------------------+
 bool DetectBullishBOS(
    const string symbol,
@@ -264,19 +355,28 @@ bool DetectBullishBOS(
    double &brokenLevel
 )
 {
-   return(DetectBullishMSS(
+   ENUM_STRUCTURE_DIRECTION previousStructure;
+
+   if(!DetectBullishStructureBreak(
       symbol,
       timeframe,
       candleShift,
       lookback,
       leftBars,
       rightBars,
-      brokenLevel
-   ));
+      brokenLevel,
+      previousStructure
+   ))
+   {
+      return(false);
+   }
+
+   return(previousStructure == STRUCTURE_BULLISH);
 }
 
 //+------------------------------------------------------------------+
-//| Detect bearish BOS                                               |
+//| Bearish BOS                                                      |
+//| Bearish structure -> break of swing low                         |
 //+------------------------------------------------------------------+
 bool DetectBearishBOS(
    const string symbol,
@@ -288,19 +388,27 @@ bool DetectBearishBOS(
    double &brokenLevel
 )
 {
-   return(DetectBearishMSS(
+   ENUM_STRUCTURE_DIRECTION previousStructure;
+
+   if(!DetectBearishStructureBreak(
       symbol,
       timeframe,
       candleShift,
       lookback,
       leftBars,
       rightBars,
-      brokenLevel
-   ));
+      brokenLevel,
+      previousStructure
+   ))
+   {
+      return(false);
+   }
+
+   return(previousStructure == STRUCTURE_BEARISH);
 }
 
 //+------------------------------------------------------------------+
-//| Analyze displacement + structure                                 |
+//| Analyze complete structure signal                                |
 //+------------------------------------------------------------------+
 StructureSignal AnalyzeStructureSignal(
    const string symbol,
@@ -338,8 +446,11 @@ StructureSignal AnalyzeStructureSignal(
          candleShift
       );
 
-   double bullishLevel = 0.0;
-   double bearishLevel = 0.0;
+   double bullishMSSLevel = 0.0;
+   double bearishMSSLevel = 0.0;
+
+   double bullishBOSLevel = 0.0;
+   double bearishBOSLevel = 0.0;
 
    signal.bullishMSS =
       DetectBullishMSS(
@@ -349,7 +460,7 @@ StructureSignal AnalyzeStructureSignal(
          lookback,
          leftBars,
          rightBars,
-         bullishLevel
+         bullishMSSLevel
       );
 
    signal.bearishMSS =
@@ -360,7 +471,7 @@ StructureSignal AnalyzeStructureSignal(
          lookback,
          leftBars,
          rightBars,
-         bearishLevel
+         bearishMSSLevel
       );
 
    signal.bullishBOS =
@@ -371,7 +482,7 @@ StructureSignal AnalyzeStructureSignal(
          lookback,
          leftBars,
          rightBars,
-         bullishLevel
+         bullishBOSLevel
       );
 
    signal.bearishBOS =
@@ -382,18 +493,28 @@ StructureSignal AnalyzeStructureSignal(
          lookback,
          leftBars,
          rightBars,
-         bearishLevel
+         bearishBOSLevel
       );
 
-   if(signal.bullishMSS || signal.bullishBOS)
+   //--- Select the structural event.
+   if(signal.bullishMSS)
    {
-      signal.brokenLevel = bullishLevel;
+      signal.brokenLevel = bullishMSSLevel;
       signal.valid = true;
    }
-
-   if(signal.bearishMSS || signal.bearishBOS)
+   else if(signal.bearishMSS)
    {
-      signal.brokenLevel = bearishLevel;
+      signal.brokenLevel = bearishMSSLevel;
+      signal.valid = true;
+   }
+   else if(signal.bullishBOS)
+   {
+      signal.brokenLevel = bullishBOSLevel;
+      signal.valid = true;
+   }
+   else if(signal.bearishBOS)
+   {
+      signal.brokenLevel = bearishBOSLevel;
       signal.valid = true;
    }
 
