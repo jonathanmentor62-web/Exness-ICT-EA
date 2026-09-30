@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //| MarketStructure.mqh                                              |
-//| Market structure detection for Exness ICT EA                    |
+//| Market-structure detection for Exness ICT EA                    |
 //+------------------------------------------------------------------+
 #ifndef __EXNESS_ICT_MARKET_STRUCTURE_MQH__
 #define __EXNESS_ICT_MARKET_STRUCTURE_MQH__
@@ -16,7 +16,28 @@ enum ENUM_STRUCTURE_DIRECTION
 };
 
 //+------------------------------------------------------------------+
-//| Check confirmed swing high                                      |
+//| Validate structure-analysis parameters                            |
+//+------------------------------------------------------------------+
+bool IsValidStructureParameters(
+   const int leftBars,
+   const int rightBars,
+   const int lookback
+)
+{
+   if(leftBars < 1)
+      return(false);
+
+   if(rightBars < 1)
+      return(false);
+
+   if(lookback < 1)
+      return(false);
+
+   return(true);
+}
+
+//+------------------------------------------------------------------+
+//| Check whether a candle is a confirmed swing high                |
 //+------------------------------------------------------------------+
 bool IsSwingHigh(
    const string symbol,
@@ -26,34 +47,69 @@ bool IsSwingHigh(
    const int rightBars
 )
 {
+   if(!IsValidStructureParameters(
+      leftBars,
+      rightBars,
+      1
+   ))
+   {
+      return(false);
+   }
+
+   // A swing requires candles to its right that are already closed.
    if(shift <= rightBars)
       return(false);
 
-   if(leftBars <= 0 || rightBars <= 0)
-      return(false);
-
-   int totalBars = Bars(symbol, timeframe);
+   int totalBars = Bars(
+      symbol,
+      timeframe
+   );
 
    if(totalBars <= 0)
       return(false);
 
+   // Need enough older candles on the left side.
    if(shift + leftBars >= totalBars)
       return(false);
 
-   double centerHigh = iHigh(symbol, timeframe, shift);
+   double centerHigh = iHigh(
+      symbol,
+      timeframe,
+      shift
+   );
 
    if(centerHigh <= 0.0)
       return(false);
 
+   // Older candles.
    for(int i = 1; i <= leftBars; i++)
    {
-      if(centerHigh <= iHigh(symbol, timeframe, shift + i))
+      double comparisonHigh = iHigh(
+         symbol,
+         timeframe,
+         shift + i
+      );
+
+      if(comparisonHigh <= 0.0)
+         return(false);
+
+      if(centerHigh <= comparisonHigh)
          return(false);
    }
 
+   // More recent candles.
    for(int i = 1; i <= rightBars; i++)
    {
-      if(centerHigh <= iHigh(symbol, timeframe, shift - i))
+      double comparisonHigh = iHigh(
+         symbol,
+         timeframe,
+         shift - i
+      );
+
+      if(comparisonHigh <= 0.0)
+         return(false);
+
+      if(centerHigh <= comparisonHigh)
          return(false);
    }
 
@@ -61,7 +117,7 @@ bool IsSwingHigh(
 }
 
 //+------------------------------------------------------------------+
-//| Check confirmed swing low                                       |
+//| Check whether a candle is a confirmed swing low                 |
 //+------------------------------------------------------------------+
 bool IsSwingLow(
    const string symbol,
@@ -71,13 +127,22 @@ bool IsSwingLow(
    const int rightBars
 )
 {
+   if(!IsValidStructureParameters(
+      leftBars,
+      rightBars,
+      1
+   ))
+   {
+      return(false);
+   }
+
    if(shift <= rightBars)
       return(false);
 
-   if(leftBars <= 0 || rightBars <= 0)
-      return(false);
-
-   int totalBars = Bars(symbol, timeframe);
+   int totalBars = Bars(
+      symbol,
+      timeframe
+   );
 
    if(totalBars <= 0)
       return(false);
@@ -85,20 +150,44 @@ bool IsSwingLow(
    if(shift + leftBars >= totalBars)
       return(false);
 
-   double centerLow = iLow(symbol, timeframe, shift);
+   double centerLow = iLow(
+      symbol,
+      timeframe,
+      shift
+   );
 
    if(centerLow <= 0.0)
       return(false);
 
+   // Older candles.
    for(int i = 1; i <= leftBars; i++)
    {
-      if(centerLow >= iLow(symbol, timeframe, shift + i))
+      double comparisonLow = iLow(
+         symbol,
+         timeframe,
+         shift + i
+      );
+
+      if(comparisonLow <= 0.0)
+         return(false);
+
+      if(centerLow >= comparisonLow)
          return(false);
    }
 
+   // More recent candles.
    for(int i = 1; i <= rightBars; i++)
    {
-      if(centerLow >= iLow(symbol, timeframe, shift - i))
+      double comparisonLow = iLow(
+         symbol,
+         timeframe,
+         shift - i
+      );
+
+      if(comparisonLow <= 0.0)
+         return(false);
+
+      if(centerLow >= comparisonLow)
          return(false);
    }
 
@@ -117,23 +206,42 @@ int FindRecentSwingHigh(
    const int rightBars
 )
 {
-   if(startShift <= rightBars || lookback <= 0)
+   if(!IsValidStructureParameters(
+      leftBars,
+      rightBars,
+      lookback
+   ))
+   {
+      return(-1);
+   }
+
+   if(startShift <= rightBars)
       return(-1);
 
-   int totalBars = Bars(symbol, timeframe);
+   int totalBars = Bars(
+      symbol,
+      timeframe
+   );
 
    if(totalBars <= 0)
       return(-1);
 
-   int lastShift = MathMin(
-      startShift + lookback,
-      totalBars - leftBars - 1
-   );
+   int lastPossibleShift =
+      totalBars - leftBars - 1;
 
-   if(lastShift < startShift)
+   if(lastPossibleShift < startShift)
       return(-1);
 
-   for(int shift = startShift; shift <= lastShift; shift++)
+   int lastShift = MathMin(
+      startShift + lookback - 1,
+      lastPossibleShift
+   );
+
+   for(
+      int shift = startShift;
+      shift <= lastShift;
+      shift++
+   )
    {
       if(IsSwingHigh(
          symbol,
@@ -162,23 +270,42 @@ int FindRecentSwingLow(
    const int rightBars
 )
 {
-   if(startShift <= rightBars || lookback <= 0)
+   if(!IsValidStructureParameters(
+      leftBars,
+      rightBars,
+      lookback
+   ))
+   {
+      return(-1);
+   }
+
+   if(startShift <= rightBars)
       return(-1);
 
-   int totalBars = Bars(symbol, timeframe);
+   int totalBars = Bars(
+      symbol,
+      timeframe
+   );
 
    if(totalBars <= 0)
       return(-1);
 
-   int lastShift = MathMin(
-      startShift + lookback,
-      totalBars - leftBars - 1
-   );
+   int lastPossibleShift =
+      totalBars - leftBars - 1;
 
-   if(lastShift < startShift)
+   if(lastPossibleShift < startShift)
       return(-1);
 
-   for(int shift = startShift; shift <= lastShift; shift++)
+   int lastShift = MathMin(
+      startShift + lookback - 1,
+      lastPossibleShift
+   );
+
+   for(
+      int shift = startShift;
+      shift <= lastShift;
+      shift++
+   )
    {
       if(IsSwingLow(
          symbol,
@@ -196,21 +323,22 @@ int FindRecentSwingLow(
 }
 
 //+------------------------------------------------------------------+
-//| Find previous swing high after the latest one                    |
+//| Find the swing high before another swing high                    |
 //+------------------------------------------------------------------+
 int FindPreviousSwingHigh(
    const string symbol,
    const ENUM_TIMEFRAMES timeframe,
-   const int latestShift,
+   const int recentSwingShift,
    const int lookback,
    const int leftBars,
    const int rightBars
 )
 {
-   if(latestShift < 0)
+   if(recentSwingShift < 0)
       return(-1);
 
-   int startShift = latestShift + rightBars + 1;
+   int startShift =
+      recentSwingShift + rightBars + 1;
 
    return(FindRecentSwingHigh(
       symbol,
@@ -223,21 +351,22 @@ int FindPreviousSwingHigh(
 }
 
 //+------------------------------------------------------------------+
-//| Find previous swing low after the latest one                     |
+//| Find the swing low before another swing low                      |
 //+------------------------------------------------------------------+
 int FindPreviousSwingLow(
    const string symbol,
    const ENUM_TIMEFRAMES timeframe,
-   const int latestShift,
+   const int recentSwingShift,
    const int lookback,
    const int leftBars,
    const int rightBars
 )
 {
-   if(latestShift < 0)
+   if(recentSwingShift < 0)
       return(-1);
 
-   int startShift = latestShift + rightBars + 1;
+   int startShift =
+      recentSwingShift + rightBars + 1;
 
    return(FindRecentSwingLow(
       symbol,
@@ -250,8 +379,11 @@ int FindPreviousSwingLow(
 }
 
 //+------------------------------------------------------------------+
-//| Determine established structure                                  |
-//| Requires both higher-high/higher-low or lower-high/lower-low.    |
+//| Determine established market structure                           |
+//|                                                                  |
+//| Bullish = Higher High + Higher Low                               |
+//| Bearish = Lower High + Lower Low                                 |
+//| Otherwise = Unknown                                              |
 //+------------------------------------------------------------------+
 ENUM_STRUCTURE_DIRECTION GetStructureDirection(
    const string symbol,
@@ -262,9 +394,20 @@ ENUM_STRUCTURE_DIRECTION GetStructureDirection(
    const int rightBars
 )
 {
+   if(!IsValidStructureParameters(
+      leftBars,
+      rightBars,
+      lookback
+   ))
+   {
+      return(STRUCTURE_UNKNOWN);
+   }
+
    if(referenceShift <= rightBars)
       return(STRUCTURE_UNKNOWN);
 
+   // Find the latest confirmed swing high and low that existed
+   // before the reference candle.
    int recentHigh = FindRecentSwingHigh(
       symbol,
       timeframe,
@@ -307,25 +450,51 @@ ENUM_STRUCTURE_DIRECTION GetStructureDirection(
    if(previousHigh < 0 || previousLow < 0)
       return(STRUCTURE_UNKNOWN);
 
-   double recentHighPrice   = iHigh(symbol, timeframe, recentHigh);
-   double previousHighPrice = iHigh(symbol, timeframe, previousHigh);
+   double recentHighPrice = iHigh(
+      symbol,
+      timeframe,
+      recentHigh
+   );
 
-   double recentLowPrice    = iLow(symbol, timeframe, recentLow);
-   double previousLowPrice  = iLow(symbol, timeframe, previousLow);
+   double previousHighPrice = iHigh(
+      symbol,
+      timeframe,
+      previousHigh
+   );
 
-   if(recentHighPrice <= 0.0 ||
+   double recentLowPrice = iLow(
+      symbol,
+      timeframe,
+      recentLow
+   );
+
+   double previousLowPrice = iLow(
+      symbol,
+      timeframe,
+      previousLow
+   );
+
+   if(
+      recentHighPrice <= 0.0 ||
       previousHighPrice <= 0.0 ||
       recentLowPrice <= 0.0 ||
-      previousLowPrice <= 0.0)
+      previousLowPrice <= 0.0
+   )
    {
       return(STRUCTURE_UNKNOWN);
    }
 
-   bool higherHigh = recentHighPrice > previousHighPrice;
-   bool higherLow  = recentLowPrice  > previousLowPrice;
+   bool higherHigh =
+      recentHighPrice > previousHighPrice;
 
-   bool lowerHigh  = recentHighPrice < previousHighPrice;
-   bool lowerLow   = recentLowPrice  < previousLowPrice;
+   bool higherLow =
+      recentLowPrice > previousLowPrice;
+
+   bool lowerHigh =
+      recentHighPrice < previousHighPrice;
+
+   bool lowerLow =
+      recentLowPrice < previousLowPrice;
 
    if(higherHigh && higherLow)
       return(STRUCTURE_BULLISH);
@@ -337,7 +506,49 @@ ENUM_STRUCTURE_DIRECTION GetStructureDirection(
 }
 
 //+------------------------------------------------------------------+
-//| Get recent swing high price                                      |
+//| Get most recent swing-high shift                                 |
+//+------------------------------------------------------------------+
+int GetRecentSwingHighShift(
+   const string symbol,
+   const ENUM_TIMEFRAMES timeframe,
+   const int lookback,
+   const int leftBars,
+   const int rightBars
+)
+{
+   return(FindRecentSwingHigh(
+      symbol,
+      timeframe,
+      rightBars + 1,
+      lookback,
+      leftBars,
+      rightBars
+   ));
+}
+
+//+------------------------------------------------------------------+
+//| Get most recent swing-low shift                                  |
+//+------------------------------------------------------------------+
+int GetRecentSwingLowShift(
+   const string symbol,
+   const ENUM_TIMEFRAMES timeframe,
+   const int lookback,
+   const int leftBars,
+   const int rightBars
+)
+{
+   return(FindRecentSwingLow(
+      symbol,
+      timeframe,
+      rightBars + 1,
+      lookback,
+      leftBars,
+      rightBars
+   ));
+}
+
+//+------------------------------------------------------------------+
+//| Get most recent confirmed swing-high price                       |
 //+------------------------------------------------------------------+
 double GetRecentSwingHigh(
    const string symbol,
@@ -347,10 +558,9 @@ double GetRecentSwingHigh(
    const int rightBars
 )
 {
-   int shift = FindRecentSwingHigh(
+   int shift = GetRecentSwingHighShift(
       symbol,
       timeframe,
-      rightBars + 1,
       lookback,
       leftBars,
       rightBars
@@ -359,11 +569,15 @@ double GetRecentSwingHigh(
    if(shift < 0)
       return(0.0);
 
-   return(iHigh(symbol, timeframe, shift));
+   return(iHigh(
+      symbol,
+      timeframe,
+      shift
+   ));
 }
 
 //+------------------------------------------------------------------+
-//| Get recent swing low price                                       |
+//| Get most recent confirmed swing-low price                        |
 //+------------------------------------------------------------------+
 double GetRecentSwingLow(
    const string symbol,
@@ -373,10 +587,9 @@ double GetRecentSwingLow(
    const int rightBars
 )
 {
-   int shift = FindRecentSwingLow(
+   int shift = GetRecentSwingLowShift(
       symbol,
       timeframe,
-      rightBars + 1,
       lookback,
       leftBars,
       rightBars
@@ -385,7 +598,31 @@ double GetRecentSwingLow(
    if(shift < 0)
       return(0.0);
 
-   return(iLow(symbol, timeframe, shift));
+   return(iLow(
+      symbol,
+      timeframe,
+      shift
+   ));
+}
+
+//+------------------------------------------------------------------+
+//| Get structure direction as text                                  |
+//+------------------------------------------------------------------+
+string StructureDirectionToString(
+   const ENUM_STRUCTURE_DIRECTION direction
+)
+{
+   switch(direction)
+   {
+      case STRUCTURE_BULLISH:
+         return("BULLISH");
+
+      case STRUCTURE_BEARISH:
+         return("BEARISH");
+
+      default:
+         return("UNKNOWN");
+   }
 }
 
 #endif
