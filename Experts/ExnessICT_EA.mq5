@@ -3,13 +3,14 @@
 //|                     Exness ICT Automated Trading System          |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "0.20"
+#property version   "0.21"
 #property description "H4 ICT framework with M15 confirmation."
 #property description "Trading remains disabled during development."
 
 #include <Trade/Trade.mqh>
 #include "../Include/Config.mqh"
 #include "../Include/MarketStructure.mqh"
+#include "../Include/Liquidity.mqh"
 
 CTrade Trade;
 
@@ -19,7 +20,7 @@ input ENUM_TIMEFRAMES InpConfirmTF     = ICT_CONFIRM_TF;
 input double          InpMaxRiskMoney  = ICT_MAX_RISK_MONEY;
 
 input ulong           InpMagicNumber   = ICT_MAGIC_NUMBER;
-input int             InpMaxSpreadPts = ICT_MAX_SPREAD_PTS;
+input int             InpMaxSpreadPts  = ICT_MAX_SPREAD_PTS;
 input int             InpDeviationPts  = ICT_MAX_SLIPPAGE_PTS;
 
 //--- Safety switch
@@ -40,7 +41,7 @@ int OnInit()
    Trade.SetDeviationInPoints(InpDeviationPts);
 
    Print("==========================================");
-   Print("Exness ICT EA v0.20 initialized");
+   Print("Exness ICT EA v0.21 initialized");
    Print("Symbol: ", _Symbol);
    Print("Primary timeframe: ", EnumToString(InpPrimaryTF));
    Print("Confirmation timeframe: ", EnumToString(InpConfirmTF));
@@ -64,12 +65,12 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   //--- Only process a newly closed/formed primary candle once.
    datetime primaryBar = iTime(_Symbol, InpPrimaryTF, 0);
 
    if(primaryBar <= 0)
       return;
 
+   //--- Only process each new primary candle once.
    if(primaryBar == g_lastPrimaryBar)
       return;
 
@@ -78,37 +79,45 @@ void OnTick()
    //--- Development diagnostics.
    AnalyzePrimaryStructure(_Symbol);
 
-   //--- Trading is intentionally disabled.
+   //--- Trading remains disabled during development.
    if(!InpEnableTrading)
       return;
 
    //================================================================
    // FUTURE LIVE PIPELINE
    //
-   // 1. H4 bias
+   // 1. H4 directional context
    // 2. H4 liquidity
    // 3. Liquidity sweep
    // 4. Displacement
-   // 5. H4/M15 MSS
+   // 5. MSS / BOS
    // 6. FVG / Order Block
    // 7. M15 confirmation
-   // 8. Structural SL
-   // 9. <= $2 risk sizing
-   // 10. Liquidity TP
-   // 11. Safety gates
-   // 12. Execution
+   // 8. Structural stop loss
+   // 9. Position sizing <= $2 planned risk
+   // 10. Logical liquidity target
+   // 11. Risk / spread / exposure safety
+   // 12. Trade execution
    // 13. Position management
    //================================================================
 }
 
 //+------------------------------------------------------------------+
-//| Analyze current H4 structure                                     |
+//| Analyze current primary timeframe structure                      |
 //+------------------------------------------------------------------+
 void AnalyzePrimaryStructure(const string symbol)
 {
    if(!IsSymbolTradable(symbol))
    {
       Print("[STRUCTURE] Symbol not tradable: ", symbol);
+      return;
+   }
+
+   int barsAvailable = Bars(symbol, InpPrimaryTF);
+
+   if(barsAvailable <= ICT_SWING_RIGHT + ICT_SWING_LEFT + 5)
+   {
+      Print("[STRUCTURE] Not enough history for ", symbol);
       return;
    }
 
@@ -139,14 +148,55 @@ void AnalyzePrimaryStructure(const string symbol)
    if(swingLowShift >= 0)
       swingLow = iLow(symbol, InpPrimaryTF, swingLowShift);
 
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+
    Print(
       "[STRUCTURE] ",
       symbol,
-      " | H4 swing high=",
-      DoubleToString(swingHigh, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)),
-      " | H4 swing low=",
-      DoubleToString(swingLow, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS))
+      " | ",
+      EnumToString(InpPrimaryTF),
+      " swing high=",
+      DoubleToString(swingHigh, digits),
+      " | swing low=",
+      DoubleToString(swingLow, digits)
    );
+
+   //--- Development liquidity diagnostics.
+   LiquidityLevel buySide = GetBuySideLiquidity(
+      symbol,
+      InpPrimaryTF,
+      InpStructureLookback,
+      ICT_SWING_LEFT,
+      ICT_SWING_RIGHT
+   );
+
+   LiquidityLevel sellSide = GetSellSideLiquidity(
+      symbol,
+      InpPrimaryTF,
+      InpStructureLookback,
+      ICT_SWING_LEFT,
+      ICT_SWING_RIGHT
+   );
+
+   if(buySide.valid)
+   {
+      Print(
+         "[LIQUIDITY] Buy-side liquidity=",
+         DoubleToString(buySide.price, digits),
+         " | shift=",
+         buySide.shift
+      );
+   }
+
+   if(sellSide.valid)
+   {
+      Print(
+         "[LIQUIDITY] Sell-side liquidity=",
+         DoubleToString(sellSide.price, digits),
+         " | shift=",
+         sellSide.shift
+      );
+   }
 }
 
 //+------------------------------------------------------------------+
