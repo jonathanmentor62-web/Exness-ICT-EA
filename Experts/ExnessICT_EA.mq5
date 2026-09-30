@@ -1007,4 +1007,4 @@ void ProcessM5Confirmation(
          g_h4SetupDirection
       ),
       " | displacement=",
- 
+  
