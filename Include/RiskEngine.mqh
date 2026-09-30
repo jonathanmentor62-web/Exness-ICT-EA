@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //| RiskEngine.mqh                                                   |
-//| Equity-based position sizing for Exness ICT EA                   |
+//| Equity-based position sizing and portfolio risk                  |
 //+------------------------------------------------------------------+
 #ifndef __EXNESS_ICT_RISK_ENGINE_MQH__
 #define __EXNESS_ICT_RISK_ENGINE_MQH__
@@ -8,54 +8,60 @@
 #include "Config.mqh"
 
 //====================================================================
-// BASIC ACCOUNT FUNCTIONS
+// EQUITY
 //====================================================================
 
-// Return current account equity.
 double RE_GetEquity()
 {
    return AccountInfoDouble(ACCOUNT_EQUITY);
 }
 
-// Return current account balance.
-double RE_GetBalance()
+//====================================================================
+// RISK PERCENT
+//====================================================================
+
+double RE_GetRiskPercent(
+   const double configuredRiskPercent = ICT_RISK_PERCENT
+)
 {
-   return AccountInfoDouble(ACCOUNT_BALANCE);
+   double p = configuredRiskPercent;
+
+   if(p < 0.0)
+      p = 0.0;
+
+   if(p > ICT_MAX_RISK_PERCENT)
+      p = ICT_MAX_RISK_PERCENT;
+
+   return p;
 }
 
 //====================================================================
-// RISK MONEY
+// MONEY RISK
 //====================================================================
 
-// Calculate the maximum money allowed to be risked on one trade.
-double RE_CalculateRiskMoney()
+double RE_GetRiskMoney(
+   const double configuredRiskPercent = ICT_RISK_PERCENT
+)
 {
    double equity = RE_GetEquity();
 
    if(equity <= 0.0)
       return 0.0;
 
-   double riskPercent = ICT_RISK_PERCENT;
-
-   // Hard safety clamp.
-   if(riskPercent < 0.0)
-      riskPercent = 0.0;
-
-   if(riskPercent > ICT_MAX_RISK_PERCENT)
-      riskPercent = ICT_MAX_RISK_PERCENT;
-
-   return equity * (riskPercent / 100.0);
+   return equity *
+          RE_GetRiskPercent(configuredRiskPercent) /
+          100.0;
 }
 
 //====================================================================
-// MONEY RISK FOR ONE LOT
+// RISK PER LOT
 //====================================================================
 
-// Calculate approximate money lost for one lot if SL is hit.
-double RE_CalculateMoneyRiskPerLot(
-   string symbol,
-   double entryPrice,
-   double stopLossPrice
+double RE_CalculateRiskPerLot(
+   const string symbol,
+   const ENUM_ORDER_TYPE orderType,
+   const double entryPrice,
+   const double stopLossPrice
 )
 {
    if(symbol == "")
@@ -64,161 +70,166 @@ double RE_CalculateMoneyRiskPerLot(
    if(entryPrice <= 0.0 || stopLossPrice <= 0.0)
       return 0.0;
 
-   double tickSize  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
-   double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
-
-   if(tickSize <= 0.0 || tickValue <= 0.0)
+   if(orderType != ORDER_TYPE_BUY &&
+      orderType != ORDER_TYPE_SELL)
       return 0.0;
 
-   double priceDistance = MathAbs(entryPrice - stopLossPrice);
+   double profit = 0.0;
 
-   if(priceDistance <= 0.0)
-      return 0.0;
-
-   double numberOfTicks = priceDistance / tickSize;
-
-   return numberOfTicks * tickValue;
-}
-
-//====================================================================
-// RAW LOT CALCULATION
-//====================================================================
-
-// Calculate lot size from:
-// equity -> risk percentage -> SL distance.
-double RE_CalculateRawLotSize(
-   string symbol,
-   double entryPrice,
-   double stopLossPrice
-)
-{
-   double riskMoney = RE_CalculateRiskMoney();
-
-   if(riskMoney <= 0.0)
-      return 0.0;
-
-   double riskPerLot = RE_CalculateMoneyRiskPerLot(
+   if(!OrderCalcProfit(
+      orderType,
       symbol,
+      1.0,
       entryPrice,
-      stopLossPrice
-   );
-
-   if(riskPerLot <= 0.0)
+      stopLossPrice,
+      profit
+   ))
       return 0.0;
 
-   return riskMoney / riskPerLot;
+   return MathAbs(profit);
 }
 
 //====================================================================
 // LOT NORMALIZATION
 //====================================================================
 
-double RE_NormalizeLotSize(
-   string symbol,
-   double rawLots
+double RE_NormalizeLots(
+   const string symbol,
+   const double rawLots
 )
 {
    if(symbol == "" || rawLots <= 0.0)
       return 0.0;
 
-   double minLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-   double maxLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-   double lotStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   double minLot =
+      SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
 
-   if(minLot <= 0.0 || maxLot <= 0.0 || lotStep <= 0.0)
+   double maxLot =
+      SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
+
+   double step =
+      SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
+
+   if(minLot <= 0.0 ||
+      maxLot <= 0.0 ||
+      step <= 0.0)
       return 0.0;
 
-   // Never exceed broker maximum.
-   double lots = MathMin(rawLots, maxLot);
+   double lots = MathMin(rawLots,maxLot);
 
-   // Normalize DOWN to the broker's volume step.
-   lots = MathFloor(lots / lotStep) * lotStep;
+   lots = MathFloor(lots / step) * step;
 
-   // If the calculated amount is below the broker minimum,
-   // do NOT increase it automatically because that would increase risk.
+   // Never round upward to broker minimum.
+   // That could exceed intended risk.
    if(lots < minLot)
       return 0.0;
 
-   int volumeDigits = 2;
+   int digits = 0;
 
-   if(lotStep >= 1.0)
-      volumeDigits = 0;
-   else if(lotStep >= 0.1)
-      volumeDigits = 1;
-   else if(lotStep >= 0.01)
-      volumeDigits = 2;
-   else
-      volumeDigits = 3;
+   if(step < 1.0)
+      digits = (int)MathCeil(-MathLog10(step));
 
-   return NormalizeDouble(lots, volumeDigits);
+   if(digits < 0)
+      digits = 0;
+
+   if(digits > 8)
+      digits = 8;
+
+   return NormalizeDouble(lots,digits);
 }
 
 //====================================================================
-// FINAL LOT CALCULATION
+// RAW LOT SIZE
 //====================================================================
 
-double RE_CalculateLotSize(
-   string symbol,
-   double entryPrice,
-   double stopLossPrice
+double RE_CalculateRawLots(
+   const string symbol,
+   const ENUM_ORDER_TYPE orderType,
+   const double entryPrice,
+   const double stopLossPrice,
+   const double configuredRiskPercent = ICT_RISK_PERCENT
 )
 {
-   double rawLots = RE_CalculateRawLotSize(
-      symbol,
-      entryPrice,
-      stopLossPrice
-   );
+   double riskMoney =
+      RE_GetRiskMoney(configuredRiskPercent);
 
-   if(rawLots <= 0.0)
+   double riskPerLot =
+      RE_CalculateRiskPerLot(
+         symbol,
+         orderType,
+         entryPrice,
+         stopLossPrice
+      );
+
+   if(riskMoney <= 0.0 ||
+      riskPerLot <= 0.0)
       return 0.0;
 
-   return RE_NormalizeLotSize(
+   return riskMoney / riskPerLot;
+}
+
+//====================================================================
+// FINAL LOT SIZE
+//====================================================================
+
+double RE_CalculateLots(
+   const string symbol,
+   const ENUM_ORDER_TYPE orderType,
+   const double entryPrice,
+   const double stopLossPrice,
+   const double configuredRiskPercent = ICT_RISK_PERCENT
+)
+{
+   return RE_NormalizeLots(
       symbol,
-      rawLots
+      RE_CalculateRawLots(
+         symbol,
+         orderType,
+         entryPrice,
+         stopLossPrice,
+         configuredRiskPercent
+      )
    );
 }
 
 //====================================================================
-// CALCULATED RISK FOR A POSITION
+// POSITION RISK
 //====================================================================
 
-double RE_CalculatePositionRiskMoney(
-   string symbol,
-   double volume,
-   double entryPrice,
-   double stopLossPrice
+double RE_PositionRiskMoney(
+   const string symbol,
+   const ENUM_ORDER_TYPE orderType,
+   const double volume,
+   const double entryPrice,
+   const double stopLossPrice
 )
 {
    if(volume <= 0.0)
       return 0.0;
 
-   double riskPerLot = RE_CalculateMoneyRiskPerLot(
-      symbol,
-      entryPrice,
-      stopLossPrice
-   );
+   double perLot =
+      RE_CalculateRiskPerLot(
+         symbol,
+         orderType,
+         entryPrice,
+         stopLossPrice
+      );
 
-   if(riskPerLot <= 0.0)
+   if(perLot <= 0.0)
       return 0.0;
 
-   return riskPerLot * volume;
+   return perLot * volume;
 }
 
 //====================================================================
-// TOTAL OPEN RISK
+// OPEN RISK
 //====================================================================
 
-// Calculate the risk represented by currently open EA positions.
-//
-// Important:
-// Only positions belonging to this EA's magic number are counted.
-double RE_GetTotalOpenRiskMoney()
+double RE_GetOpenRiskMoney()
 {
-   double totalRisk = 0.0;
+   double total = 0.0;
 
-   int totalPositions = PositionsTotal();
-
-   for(int i = 0; i < totalPositions; i++)
+   for(int i = 0; i < PositionsTotal(); i++)
    {
       ulong ticket = PositionGetTicket(i);
 
@@ -228,67 +239,96 @@ double RE_GetTotalOpenRiskMoney()
       if(!PositionSelectByTicket(ticket))
          continue;
 
-      long magic = PositionGetInteger(POSITION_MAGIC);
-
-      if(magic != ICT_MAGIC_NUMBER)
+      if((ulong)PositionGetInteger(POSITION_MAGIC)
+         != ICT_MAGIC_NUMBER)
          continue;
 
-      string symbol = PositionGetString(POSITION_SYMBOL);
+      string symbol =
+         PositionGetString(POSITION_SYMBOL);
 
-      double volume = PositionGetDouble(POSITION_VOLUME);
-      double entry  = PositionGetDouble(POSITION_PRICE_OPEN);
-      double sl     = PositionGetDouble(POSITION_SL);
+      long type =
+         PositionGetInteger(POSITION_TYPE);
 
-      // A position without an SL cannot be treated as safely
-      // risk-controlled by this engine.
+      ENUM_ORDER_TYPE orderType =
+         (type == POSITION_TYPE_BUY)
+         ? ORDER_TYPE_BUY
+         : ORDER_TYPE_SELL;
+
+      double volume =
+         PositionGetDouble(POSITION_VOLUME);
+
+      double entry =
+         PositionGetDouble(POSITION_PRICE_OPEN);
+
+      double sl =
+         PositionGetDouble(POSITION_SL);
+
+      // An EA position without an SL is unmanaged risk.
+      // Do not count it as zero risk.
       if(sl <= 0.0)
-         continue;
+      {
+         Print(
+            "[RISK WARNING] EA position has no stop loss. "
+            "Risk validation will block new entries."
+         );
 
-      totalRisk += RE_CalculatePositionRiskMoney(
-         symbol,
-         volume,
-         entry,
-         sl
-      );
+         return DBL_MAX;
+      }
+
+      total +=
+         RE_PositionRiskMoney(
+            symbol,
+            orderType,
+            volume,
+            entry,
+            sl
+         );
    }
 
-   return totalRisk;
+   return total;
 }
 
 //====================================================================
-// TOTAL OPEN RISK PERCENT
+// OPEN RISK PERCENT
 //====================================================================
 
-double RE_GetTotalOpenRiskPercent()
+double RE_GetOpenRiskPercent()
 {
    double equity = RE_GetEquity();
 
    if(equity <= 0.0)
       return 0.0;
 
-   double totalRiskMoney = RE_GetTotalOpenRiskMoney();
+   double risk = RE_GetOpenRiskMoney();
 
-   return (totalRiskMoney / equity) * 100.0;
+   if(risk == DBL_MAX)
+      return 100.0;
+
+   return (risk / equity) * 100.0;
 }
 
 //====================================================================
-// NEW TRADE RISK VALIDATION
+// NEW TRADE VALIDATION
 //====================================================================
 
-bool RE_CanAcceptNewRisk(
-   string symbol,
-   double entryPrice,
-   double stopLossPrice,
-   double lots
+bool RE_ValidateNewTrade(
+   const string symbol,
+   const ENUM_ORDER_TYPE orderType,
+   const double entryPrice,
+   const double stopLossPrice,
+   const double volume,
+   const double configuredRiskPercent = ICT_RISK_PERCENT,
+   const double maxTotalRiskPercent = ICT_MAX_TOTAL_RISK_PERCENT
 )
 {
    if(symbol == "")
       return false;
 
-   if(entryPrice <= 0.0 || stopLossPrice <= 0.0)
+   if(volume <= 0.0)
       return false;
 
-   if(lots <= 0.0)
+   if(entryPrice <= 0.0 ||
+      stopLossPrice <= 0.0)
       return false;
 
    double equity = RE_GetEquity();
@@ -296,133 +336,100 @@ bool RE_CanAcceptNewRisk(
    if(equity <= 0.0)
       return false;
 
-   double newTradeRisk = RE_CalculatePositionRiskMoney(
-      symbol,
-      lots,
-      entryPrice,
-      stopLossPrice
-   );
-
-   if(newTradeRisk <= 0.0)
-      return false;
-
-   double currentRisk = RE_GetTotalOpenRiskMoney();
-
-   double maximumTotalRisk =
-      equity * (ICT_MAX_TOTAL_RISK_PERCENT / 100.0);
-
-   if((currentRisk + newTradeRisk) > maximumTotalRisk)
-      return false;
-
-   return true;
-}
-
-//====================================================================
-// COMPLETE RISK CHECK
-//====================================================================
-
-bool RE_ValidateTradeRisk(
-   string symbol,
-   double entryPrice,
-   double stopLossPrice,
-   double lots
-)
-{
-   if(symbol == "")
-      return false;
-
-   if(entryPrice <= 0.0)
-      return false;
-
-   if(stopLossPrice <= 0.0)
-      return false;
-
-   if(lots <= 0.0)
-      return false;
-
-   double equity = RE_GetEquity();
-
-   if(equity <= 0.0)
-      return false;
-
-   // Calculate actual risk.
-   double tradeRiskMoney =
-      RE_CalculatePositionRiskMoney(
+   double tradeRisk =
+      RE_PositionRiskMoney(
          symbol,
-         lots,
+         orderType,
+         volume,
          entryPrice,
          stopLossPrice
       );
 
-   if(tradeRiskMoney <= 0.0)
+   if(tradeRisk <= 0.0)
       return false;
 
    double tradeRiskPercent =
-      (tradeRiskMoney / equity) * 100.0;
+      (tradeRisk / equity) * 100.0;
 
-   // Per-trade hard limit.
-   if(tradeRiskPercent > ICT_MAX_RISK_PERCENT)
+   double hardPerTrade =
+      RE_GetRiskPercent(configuredRiskPercent);
+
+   if(tradeRiskPercent >
+      hardPerTrade + 0.000001)
       return false;
 
-   // Portfolio limit.
-   if(!RE_CanAcceptNewRisk(
-      symbol,
-      entryPrice,
-      stopLossPrice,
-      lots
-   ))
+   double currentRisk =
+      RE_GetOpenRiskMoney();
+
+   if(currentRisk == DBL_MAX)
+      return false;
+
+   double hardTotal = maxTotalRiskPercent;
+
+   if(hardTotal < 0.0)
+      hardTotal = 0.0;
+
+   if(hardTotal > ICT_MAX_TOTAL_RISK_PERCENT)
+      hardTotal = ICT_MAX_TOTAL_RISK_PERCENT;
+
+   double maxTotal =
+      equity * hardTotal / 100.0;
+
+   if((currentRisk + tradeRisk) >
+      maxTotal + 0.000001)
       return false;
 
    return true;
 }
 
 //====================================================================
-// DEBUG / INFORMATION
+// DEBUG
 //====================================================================
 
-void RE_PrintRiskSummary(
-   string symbol,
-   double entryPrice,
-   double stopLossPrice,
-   double lots
+void RE_PrintSummary(
+   const string symbol,
+   const ENUM_ORDER_TYPE orderType,
+   const double entryPrice,
+   const double stopLossPrice,
+   const double volume
 )
 {
    double equity = RE_GetEquity();
 
-   double riskMoney =
-      RE_CalculatePositionRiskMoney(
+   double risk =
+      RE_PositionRiskMoney(
          symbol,
-         lots,
+         orderType,
+         volume,
          entryPrice,
          stopLossPrice
       );
 
-   double riskPercent = 0.0;
+   double pct =
+      (equity > 0.0)
+      ? risk / equity * 100.0
+      : 0.0;
 
-   if(equity > 0.0)
-      riskPercent = (riskMoney / equity) * 100.0;
-
-   double totalRiskMoney =
-      RE_GetTotalOpenRiskMoney();
-
-   double totalRiskPercent =
-      RE_GetTotalOpenRiskPercent();
+   double openRisk =
+      RE_GetOpenRiskMoney();
 
    Print(
       "[RISK] Equity=",
-      DoubleToString(equity, 2),
+      DoubleToString(equity,2),
       " | TradeRisk=",
-      DoubleToString(riskMoney, 2),
+      DoubleToString(risk,2),
       " (",
-      DoubleToString(riskPercent, 2),
+      DoubleToString(pct,2),
       "%)",
       " | Lots=",
-      DoubleToString(lots, 2),
-      " | TotalOpenRisk=",
-      DoubleToString(totalRiskMoney, 2),
-      " (",
-      DoubleToString(totalRiskPercent, 2),
-      "%)"
+      DoubleToString(volume,2),
+      " | OpenRisk=",
+      DoubleToString(openRisk,2),
+      " | OpenRisk%=",
+      DoubleToString(
+         RE_GetOpenRiskPercent(),
+         2
+      )
    );
 }
 
