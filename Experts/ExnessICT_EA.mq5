@@ -3,7 +3,7 @@
 //|                     Exness ICT Automated Trading System          |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "0.30"
+#property version   "0.40"
 #property description "H4 ICT framework with M15 confirmation."
 #property description "Trading remains disabled during development."
 
@@ -14,9 +14,6 @@
 
 //====================================================================
 // EA MODULES
-// IMPORTANT: include order matters.
-// StructureSignal provides displacement functions used by
-// OrderBlock.mqh.
 //====================================================================
 #include "../Include/Config.mqh"
 #include "../Include/MarketStructure.mqh"
@@ -41,11 +38,11 @@ input int             InpDeviationPts  = ICT_MAX_SLIPPAGE_PTS;
 //====================================================================
 // SAFETY SWITCH
 //====================================================================
-// MUST REMAIN FALSE UNTIL FULL TESTING IS COMPLETE.
+// MUST REMAIN FALSE DURING DEVELOPMENT.
 input bool InpEnableTrading = false;
 
 //====================================================================
-// STRUCTURE / ZONE SCANNING
+// SCANNING
 //====================================================================
 input int InpStructureLookback = ICT_STRUCTURE_LOOKBACK;
 input int InpFVGScanLookback   = 20;
@@ -55,6 +52,533 @@ input int InpOBScanLookback    = ICT_OB_LOOKBACK;
 // PROCESS CONTROL
 //====================================================================
 datetime g_lastPrimaryBar = 0;
+datetime g_lastConfirmBar = 0;
+
+//====================================================================
+// H4 SETUP STATE
+//====================================================================
+bool g_h4SetupActive = false;
+
+ENUM_STRUCTURE_DIRECTION g_h4SetupDirection =
+   STRUCTURE_UNKNOWN;
+
+datetime g_h4SetupTime = 0;
+
+//====================================================================
+// M15 CONFIRMATION
+//====================================================================
+enum ENUM_CONFIRMATION_STATE
+{
+   CONFIRMATION_NONE = 0,
+   CONFIRMATION_WAITING,
+   CONFIRMATION_CONFIRMED,
+   CONFIRMATION_INVALID
+};
+
+struct M15Confirmation
+{
+   bool confirmed;
+   bool valid;
+
+   ENUM_CONFIRMATION_STATE state;
+   ENUM_STRUCTURE_DIRECTION direction;
+
+   bool displacement;
+   bool mss;
+   bool bos;
+
+   bool fvgPresent;
+   bool orderBlockPresent;
+
+   double brokenLevel;
+
+   datetime confirmationTime;
+   int confirmationShift;
+
+   string reason;
+};
+
+M15Confirmation g_m15Confirmation;
+
+//+------------------------------------------------------------------+
+//| Reset M15 confirmation                                           |
+//+------------------------------------------------------------------+
+void ResetM15Confirmation(
+   M15Confirmation &confirmation
+)
+{
+   confirmation.confirmed = false;
+   confirmation.valid = false;
+
+   confirmation.state =
+      CONFIRMATION_NONE;
+
+   confirmation.direction =
+      STRUCTURE_UNKNOWN;
+
+   confirmation.displacement = false;
+   confirmation.mss = false;
+   confirmation.bos = false;
+
+   confirmation.fvgPresent = false;
+   confirmation.orderBlockPresent = false;
+
+   confirmation.brokenLevel = 0.0;
+
+   confirmation.confirmationTime = 0;
+   confirmation.confirmationShift = -1;
+
+   confirmation.reason = "";
+}
+
+//+------------------------------------------------------------------+
+//| Validate M15 direction against H4 direction                      |
+//+------------------------------------------------------------------+
+bool IsConfirmationDirectionValid(
+   const ENUM_STRUCTURE_DIRECTION h4Direction,
+   const ENUM_STRUCTURE_DIRECTION m15Direction
+)
+{
+   if(h4Direction == STRUCTURE_UNKNOWN)
+      return(false);
+
+   if(m15Direction == STRUCTURE_UNKNOWN)
+      return(false);
+
+   return(h4Direction == m15Direction);
+}
+
+//+------------------------------------------------------------------+
+//| Validate M15 confirmation                                        |
+//+------------------------------------------------------------------+
+bool ValidateM15Confirmation(
+   const M15Confirmation &confirmation,
+   const ENUM_STRUCTURE_DIRECTION expectedDirection
+)
+{
+   if(!confirmation.valid)
+      return(false);
+
+   if(!confirmation.confirmed)
+      return(false);
+
+   if(
+      !IsConfirmationDirectionValid(
+         expectedDirection,
+         confirmation.direction
+      )
+   )
+   {
+      return(false);
+   }
+
+   if(!confirmation.displacement)
+      return(false);
+
+   if(
+      !confirmation.mss &&
+      !confirmation.bos
+   )
+   {
+      return(false);
+   }
+
+   if(confirmation.confirmationTime <= 0)
+      return(false);
+
+   if(confirmation.confirmationShift < 1)
+      return(false);
+
+   if(confirmation.brokenLevel <= 0.0)
+      return(false);
+
+   return(true);
+}
+
+//+------------------------------------------------------------------+
+//| Analyze M15 confirmation                                         |
+//+------------------------------------------------------------------+
+M15Confirmation AnalyzeM15Confirmation(
+   const string symbol,
+   const ENUM_STRUCTURE_DIRECTION expectedDirection
+)
+{
+   M15Confirmation confirmation;
+
+   ResetM15Confirmation(confirmation);
+
+   //===============================================================
+   // BASIC VALIDATION
+   //===============================================================
+   if(!IsSymbolTradable(symbol))
+   {
+      confirmation.state =
+         CONFIRMATION_INVALID;
+
+      confirmation.reason =
+         "Symbol is not tradable.";
+
+      return(confirmation);
+   }
+
+   if(expectedDirection == STRUCTURE_UNKNOWN)
+   {
+      confirmation.state =
+         CONFIRMATION_INVALID;
+
+      confirmation.reason =
+         "H4 direction is unknown.";
+
+      return(confirmation);
+   }
+
+   int barsAvailable =
+      Bars(symbol, InpConfirmTF);
+
+   if(barsAvailable < ICT_MIN_HISTORY_BARS)
+   {
+      confirmation.state =
+         CONFIRMATION_INVALID;
+
+      confirmation.reason =
+         "Insufficient M15 history.";
+
+      return(confirmation);
+   }
+
+   //===============================================================
+   // CLOSED M15 CANDLE ONLY
+   //===============================================================
+   const int signalShift = 1;
+
+   datetime signalTime =
+      iTime(
+         symbol,
+         InpConfirmTF,
+         signalShift
+      );
+
+   if(signalTime <= 0)
+   {
+      confirmation.state =
+         CONFIRMATION_INVALID;
+
+      confirmation.reason =
+         "Invalid M15 candle time.";
+
+      return(confirmation);
+   }
+
+   confirmation.confirmationShift =
+      signalShift;
+
+   confirmation.confirmationTime =
+      signalTime;
+
+   //===============================================================
+   // M15 STRUCTURE
+   //===============================================================
+   StructureSignal signal =
+      AnalyzeStructureSignal(
+         symbol,
+         InpConfirmTF,
+         signalShift,
+         InpStructureLookback,
+         ICT_SWING_LEFT,
+         ICT_SWING_RIGHT
+      );
+
+   if(!signal.valid)
+   {
+      confirmation.state =
+         CONFIRMATION_WAITING;
+
+      confirmation.reason =
+         "No M15 MSS/BOS detected.";
+
+      return(confirmation);
+   }
+
+   confirmation.direction =
+      GetSignalDirection(signal);
+
+   confirmation.displacement =
+      (
+         signal.bullishDisplacement ||
+         signal.bearishDisplacement
+      );
+
+   confirmation.mss =
+      IsMSSSignal(signal);
+
+   confirmation.bos =
+      IsBOSSignal(signal);
+
+   confirmation.brokenLevel =
+      signal.brokenLevel;
+
+   //===============================================================
+   // DIRECTION AGREEMENT
+   //===============================================================
+   if(
+      !IsConfirmationDirectionValid(
+         expectedDirection,
+         confirmation.direction
+      )
+   )
+   {
+      confirmation.state =
+         CONFIRMATION_WAITING;
+
+      confirmation.reason =
+         "M15 direction does not agree with H4.";
+
+      return(confirmation);
+   }
+
+   //===============================================================
+   // DISPLACEMENT
+   //===============================================================
+   if(!confirmation.displacement)
+   {
+      confirmation.state =
+         CONFIRMATION_WAITING;
+
+      confirmation.reason =
+         "M15 structure event lacks displacement.";
+
+      return(confirmation);
+   }
+
+   //===============================================================
+   // M15 FVG
+   //===============================================================
+   FVGZone fvg;
+
+   if(
+      DetectFVG(
+         symbol,
+         InpConfirmTF,
+         signalShift,
+         fvg
+      )
+   )
+   {
+      ENUM_STRUCTURE_DIRECTION fvgDirection =
+         STRUCTURE_UNKNOWN;
+
+      if(fvg.direction == FVG_BULLISH)
+         fvgDirection = STRUCTURE_BULLISH;
+
+      if(fvg.direction == FVG_BEARISH)
+         fvgDirection = STRUCTURE_BEARISH;
+
+      if(
+         IsConfirmationDirectionValid(
+            expectedDirection,
+            fvgDirection
+         )
+      )
+      {
+         confirmation.fvgPresent = true;
+      }
+   }
+
+   //===============================================================
+   // M15 ORDER BLOCK
+   //===============================================================
+   OrderBlock ob;
+
+   ResetOrderBlock(ob);
+
+   bool obFound = false;
+
+   if(
+      expectedDirection ==
+      STRUCTURE_BULLISH
+   )
+   {
+      obFound =
+         FindBullishOrderBlock(
+            symbol,
+            InpConfirmTF,
+            signalShift,
+            InpOBScanLookback,
+            ob
+         );
+   }
+   else
+   if(
+      expectedDirection ==
+      STRUCTURE_BEARISH
+   )
+   {
+      obFound =
+         FindBearishOrderBlock(
+            symbol,
+            InpConfirmTF,
+            signalShift,
+            InpOBScanLookback,
+            ob
+         );
+   }
+
+   confirmation.orderBlockPresent =
+      obFound;
+
+   //===============================================================
+   // FINAL M15 CONFIRMATION
+   //===============================================================
+   if(
+      confirmation.direction ==
+      expectedDirection &&
+      confirmation.displacement &&
+      (
+         confirmation.mss ||
+         confirmation.bos
+      )
+   )
+   {
+      confirmation.confirmed = true;
+      confirmation.valid = true;
+
+      confirmation.state =
+         CONFIRMATION_CONFIRMED;
+
+      confirmation.reason =
+         "M15 structure confirmed H4 direction.";
+
+      return(confirmation);
+   }
+
+   confirmation.state =
+      CONFIRMATION_WAITING;
+
+   confirmation.reason =
+      "M15 conditions incomplete.";
+
+   return(confirmation);
+}
+
+//+------------------------------------------------------------------+
+//| Print M15 confirmation                                           |
+//+------------------------------------------------------------------+
+void PrintM15Confirmation(
+   const string symbol,
+   const M15Confirmation &confirmation
+)
+{
+   int digits =
+      (int)SymbolInfoInteger(
+         symbol,
+         SYMBOL_DIGITS
+      );
+
+   Print(
+      "[M15 CONFIRMATION] ",
+      symbol,
+      " | state=",
+      (int)confirmation.state,
+      " | confirmed=",
+      confirmation.confirmed,
+      " | valid=",
+      confirmation.valid,
+      " | direction=",
+      StructureDirectionToString(
+         confirmation.direction
+      ),
+      " | displacement=",
+      confirmation.displacement,
+      " | MSS=",
+      confirmation.mss,
+      " | BOS=",
+      confirmation.bos,
+      " | FVG=",
+      confirmation.fvgPresent,
+      " | OB=",
+      confirmation.orderBlockPresent,
+      " | broken=",
+      DoubleToString(
+         confirmation.brokenLevel,
+         digits
+      ),
+      " | reason=",
+      confirmation.reason
+   );
+}
+
+//+------------------------------------------------------------------+
+//| Process M15 confirmation                                         |
+//+------------------------------------------------------------------+
+void ProcessM15Confirmation(
+   const string symbol
+)
+{
+   if(!g_h4SetupActive)
+      return;
+
+   datetime confirmBar =
+      iTime(
+         symbol,
+         InpConfirmTF,
+         0
+      );
+
+   if(confirmBar <= 0)
+      return;
+
+   if(confirmBar == g_lastConfirmBar)
+      return;
+
+   g_lastConfirmBar = confirmBar;
+
+   Print(
+      "[M15] New confirmation candle: ",
+      TimeToString(
+         confirmBar,
+         TIME_DATE | TIME_MINUTES
+      )
+   );
+
+   g_m15Confirmation =
+      AnalyzeM15Confirmation(
+         symbol,
+         g_h4SetupDirection
+      );
+
+   PrintM15Confirmation(
+      symbol,
+      g_m15Confirmation
+   );
+
+   //===============================================================
+   // FUTURE ENTRY INTEGRATION POINT
+   //===============================================================
+   //
+   // M15 confirmation
+   //       ↓
+   // Entry-zone validation
+   //       ↓
+   // Structural SL
+   //       ↓
+   // Position sizing
+   //       ↓
+   // Liquidity target
+   //       ↓
+   // Risk / exposure checks
+   //       ↓
+   // Execution
+   //
+   // NOTHING EXECUTES HERE YET.
+   //===============================================================
+
+   if(!g_m15Confirmation.confirmed)
+      return;
+
+   Print(
+      "[M15] CONFIRMATION READY — execution remains disabled."
+   );
+}
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                            |
@@ -64,14 +588,27 @@ int OnInit()
    Trade.SetExpertMagicNumber(InpMagicNumber);
    Trade.SetDeviationInPoints(InpDeviationPts);
 
+   ResetM15Confirmation(
+      g_m15Confirmation
+   );
+
    Print("==================================================");
-   Print("Exness ICT EA v0.30 initialized");
+   Print("Exness ICT EA v0.40 initialized");
    Print("Symbol: ", _Symbol);
-   Print("Primary timeframe: ", EnumToString(InpPrimaryTF));
-   Print("Confirmation timeframe: ", EnumToString(InpConfirmTF));
+   Print(
+      "Primary timeframe: ",
+      EnumToString(InpPrimaryTF)
+   );
+   Print(
+      "Confirmation timeframe: ",
+      EnumToString(InpConfirmTF)
+   );
    Print(
       "Maximum planned risk: $",
-      DoubleToString(InpMaxRiskMoney, 2)
+      DoubleToString(
+         InpMaxRiskMoney,
+         2
+      )
    );
    Print(
       "Maximum spread: ",
@@ -84,9 +621,10 @@ int OnInit()
    );
    Print("==================================================");
 
-   //--- Safety enforcement.
    if(!InpEnableTrading)
-      Print("[SAFETY] Trading is DISABLED.");
+      Print(
+         "[SAFETY] Trading is DISABLED."
+      );
 
    return(INIT_SUCCEEDED);
 }
@@ -94,7 +632,9 @@ int OnInit()
 //+------------------------------------------------------------------+
 //| Expert deinitialization                                          |
 //+------------------------------------------------------------------+
-void OnDeinit(const int reason)
+void OnDeinit(
+   const int reason
+)
 {
    Print(
       "Exness ICT EA stopped. Reason: ",
@@ -108,93 +648,92 @@ void OnDeinit(const int reason)
 void OnTick()
 {
    //===============================================================
-   // DEVELOPMENT MODE
+   // H4 PROCESSING
    //===============================================================
-   // We process once per new H4 candle.
-   //
-   // This is intentional at this stage. We are validating the
-   // analytical modules before implementing live entry execution.
-   //===============================================================
-
    datetime primaryBar =
-      iTime(_Symbol, InpPrimaryTF, 0);
+      iTime(
+         _Symbol,
+         InpPrimaryTF,
+         0
+      );
 
    if(primaryBar <= 0)
       return;
 
-   //--- Only process each new primary candle once.
-   if(primaryBar == g_lastPrimaryBar)
-      return;
+   //--- Process new H4 candle once.
+   if(primaryBar != g_lastPrimaryBar)
+   {
+      g_lastPrimaryBar = primaryBar;
 
-   g_lastPrimaryBar = primaryBar;
+      Print("--------------------------------------------------");
+      Print(
+         "[NEW H4 BAR] ",
+         _Symbol,
+         " | ",
+         TimeToString(
+            primaryBar,
+            TIME_DATE | TIME_MINUTES
+         )
+      );
 
-   Print("--------------------------------------------------");
-   Print(
-      "[NEW PRIMARY BAR] ",
-      _Symbol,
-      " | ",
-      EnumToString(InpPrimaryTF),
-      " | ",
-      TimeToString(
-         primaryBar,
-         TIME_DATE | TIME_MINUTES
-      )
+      AnalyzePrimaryStructure(
+         _Symbol
+      );
+
+      AnalyzePrimarySignal(
+         _Symbol
+      );
+
+      AnalyzePrimaryZones(
+         _Symbol
+      );
+   }
+
+   //===============================================================
+   // M15 CONFIRMATION
+   //===============================================================
+   ProcessM15Confirmation(
+      _Symbol
    );
 
    //===============================================================
-   // H4 ANALYSIS
-   //===============================================================
-   AnalyzePrimaryStructure(_Symbol);
-
-   AnalyzePrimarySignal(_Symbol);
-
-   AnalyzePrimaryZones(_Symbol);
-
-   //===============================================================
-   // M15 DEVELOPMENT ANALYSIS
-   //===============================================================
-   AnalyzeConfirmationStructure(_Symbol);
-
-   //===============================================================
-   // SAFETY STOP
-   //===============================================================
-   // NO TRADE EXECUTION IS PERMITTED IN THIS VERSION.
+   // HARD SAFETY STOP
    //===============================================================
    if(!InpEnableTrading)
       return;
 
    //===============================================================
-   // FUTURE LIVE PIPELINE
+   // FUTURE EXECUTION ENGINE
    //===============================================================
    //
-   // 1. H4 directional context
-   // 2. H4 liquidity target
-   // 3. H4 liquidity sweep
-   // 4. H4 displacement
-   // 5. H4 MSS / BOS
-   // 6. H4 FVG / Order Block
-   // 7. M15 directional confirmation
-   // 8. M15 liquidity event
-   // 9. M15 displacement
-   // 10. M15 MSS / BOS
-   // 11. M15 FVG / Order Block entry zone
-   // 12. Structural stop loss
-   // 13. Position sizing <= $2 planned risk
-   // 14. Logical liquidity target
-   // 15. Reward/risk validation
-   // 16. Spread validation
-   // 17. Exposure validation
-   // 18. Trade execution
-   // 19. Position management
+   // No order execution is implemented yet.
    //
-   // NONE OF THIS EXECUTES YET.
+   // Future:
+   //
+   // M15 confirmation
+   //       ↓
+   // liquidity / FVG / OB entry zone
+   //       ↓
+   // structural SL
+   //       ↓
+   // <= $2 risk sizing
+   //       ↓
+   // liquidity target
+   //       ↓
+   // exposure checks
+   //       ↓
+   // spread checks
+   //       ↓
+   // order execution
    //===============================================================
 }
 
 //+------------------------------------------------------------------+
 //| Analyze H4 structure                                             |
 //+------------------------------------------------------------------+
-void AnalyzePrimaryStructure(const string symbol)
+void AnalyzePrimaryStructure(
+   const string symbol
+)
 {
    if(!IsSymbolTradable(symbol))
    {
@@ -202,13 +741,20 @@ void AnalyzePrimaryStructure(const string symbol)
          "[STRUCTURE] Symbol not tradable: ",
          symbol
       );
+
       return;
    }
 
    int barsAvailable =
-      Bars(symbol, InpPrimaryTF);
+      Bars(
+         symbol,
+         InpPrimaryTF
+      );
 
-   if(barsAvailable < ICT_MIN_HISTORY_BARS)
+   if(
+      barsAvailable <
+      ICT_MIN_HISTORY_BARS
+   )
    {
       Print(
          "[STRUCTURE] Not enough history for ",
@@ -216,6 +762,7 @@ void AnalyzePrimaryStructure(const string symbol)
          " | bars=",
          barsAvailable
       );
+
       return;
    }
 
@@ -243,20 +790,24 @@ void AnalyzePrimaryStructure(const string symbol)
    double swingLow  = 0.0;
 
    if(swingHighShift >= 0)
+   {
       swingHigh =
          iHigh(
             symbol,
             InpPrimaryTF,
             swingHighShift
          );
+   }
 
    if(swingLowShift >= 0)
+   {
       swingLow =
          iLow(
             symbol,
             InpPrimaryTF,
             swingLowShift
          );
+   }
 
    int digits =
       (int)SymbolInfoInteger(
@@ -270,9 +821,15 @@ void AnalyzePrimaryStructure(const string symbol)
       " | ",
       EnumToString(InpPrimaryTF),
       " | swing high=",
-      DoubleToString(swingHigh, digits),
+      DoubleToString(
+         swingHigh,
+         digits
+      ),
       " | swing low=",
-      DoubleToString(swingLow, digits)
+      DoubleToString(
+         swingLow,
+         digits
+      )
    );
 
    //===============================================================
@@ -301,343 +858,5 @@ void AnalyzePrimaryStructure(const string symbol)
    }
    else
    {
-      Print("[LIQUIDITY] No valid buy-side level.");
-   }
-
-   //===============================================================
-   // SELL-SIDE LIQUIDITY
-   //===============================================================
-   LiquidityLevel sellSide =
-      GetSellSideLiquidity(
-         symbol,
-         InpPrimaryTF,
-         InpStructureLookback,
-         ICT_SWING_LEFT,
-         ICT_SWING_RIGHT
-      );
-
-   if(sellSide.valid)
-   {
       Print(
-         "[LIQUIDITY] Sell-side=",
-         DoubleToString(
-            sellSide.price,
-            digits
-         ),
-         " | shift=",
-         sellSide.shift
-      );
-   }
-   else
-   {
-      Print("[LIQUIDITY] No valid sell-side level.");
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Analyze H4 displacement / MSS / BOS                              |
-//+------------------------------------------------------------------+
-void AnalyzePrimarySignal(const string symbol)
-{
-   StructureSignal signal =
-      AnalyzeStructureSignal(
-         symbol,
-         InpPrimaryTF,
-         1,
-         InpStructureLookback,
-         ICT_SWING_LEFT,
-         ICT_SWING_RIGHT
-      );
-
-   if(!signal.valid)
-   {
-      Print(
-         "[H4 SIGNAL] No valid structure event on ",
-         symbol
-      );
-      return;
-   }
-
-   int digits =
-      (int)SymbolInfoInteger(
-         symbol,
-         SYMBOL_DIGITS
-      );
-
-   Print(
-      "[H4 SIGNAL] ",
-      symbol,
-      " | event=",
-      StructureEventToString(signal.event),
-      " | previous structure=",
-      StructureDirectionToString(
-         signal.previousStructure
-      ),
-      " | broken level=",
-      DoubleToString(
-         signal.brokenLevel,
-         digits
-      )
-   );
-
-   Print(
-      "[H4 DISPLACEMENT] bullish=",
-      signal.bullishDisplacement,
-      " | bearish=",
-      signal.bearishDisplacement
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Analyze H4 FVG and Order Block                                   |
-//+------------------------------------------------------------------+
-void AnalyzePrimaryZones(const string symbol)
-{
-   const int signalShift = 1;
-
-   //===============================================================
-   // FVG
-   //===============================================================
-   FVGZone fvg;
-
-   if(DetectFVG(
-      symbol,
-      InpPrimaryTF,
-      signalShift,
-      fvg
-   ))
-   {
-      int digits =
-         (int)SymbolInfoInteger(
-            symbol,
-            SYMBOL_DIGITS
-         );
-
-      Print(
-         "[FVG] ",
-         symbol,
-         " | direction=",
-         FVGDirectionToString(fvg.direction),
-         " | status=",
-         FVGStatusToString(fvg.status),
-         " | upper=",
-         DoubleToString(fvg.upper, digits),
-         " | lower=",
-         DoubleToString(fvg.lower, digits),
-         " | midpoint=",
-         DoubleToString(fvg.midpoint, digits),
-         " | size=",
-         DoubleToString(fvg.size, digits)
-      );
-   }
-   else
-   {
-      Print(
-         "[FVG] No valid FVG detected on latest closed ",
-         EnumToString(InpPrimaryTF),
-         " candle."
-      );
-   }
-
-   //===============================================================
-   // ORDER BLOCK
-   //===============================================================
-   StructureSignal signal =
-      AnalyzeStructureSignal(
-         symbol,
-         InpPrimaryTF,
-         signalShift,
-         InpStructureLookback,
-         ICT_SWING_LEFT,
-         ICT_SWING_RIGHT
-      );
-
-   OrderBlock ob;
-
-   ResetOrderBlock(ob);
-
-   bool obFound = false;
-
-   if(signal.bullishDisplacement)
-   {
-      obFound =
-         FindBullishOrderBlock(
-            symbol,
-            InpPrimaryTF,
-            signalShift,
-            InpOBScanLookback,
-            ob
-         );
-   }
-   else
-   if(signal.bearishDisplacement)
-   {
-      obFound =
-         FindBearishOrderBlock(
-            symbol,
-            InpPrimaryTF,
-            signalShift,
-            InpOBScanLookback,
-            ob
-         );
-   }
-
-   if(obFound)
-   {
-      int digits =
-         (int)SymbolInfoInteger(
-            symbol,
-            SYMBOL_DIGITS
-         );
-
-      Print(
-         "[ORDER BLOCK] ",
-         symbol,
-         " | direction=",
-         OrderBlockDirectionToString(
-            ob.direction
-         ),
-         " | status=",
-         OrderBlockStatusToString(
-            ob.status
-         ),
-         " | upper=",
-         DoubleToString(ob.upper, digits),
-         " | lower=",
-         DoubleToString(ob.lower, digits),
-         " | midpoint=",
-         DoubleToString(ob.midpoint, digits),
-         " | size=",
-         DoubleToString(ob.size, digits),
-         " | formation shift=",
-         ob.formationShift
-      );
-   }
-   else
-   {
-      Print(
-         "[ORDER BLOCK] No matching order block detected."
-      );
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Analyze M15 confirmation structure                               |
-//+------------------------------------------------------------------+
-void AnalyzeConfirmationStructure(
-   const string symbol
-)
-{
-   if(!IsSymbolTradable(symbol))
-      return;
-
-   int barsAvailable =
-      Bars(symbol, InpConfirmTF);
-
-   if(barsAvailable < ICT_MIN_HISTORY_BARS)
-   {
-      Print(
-         "[M15] Not enough confirmation history. bars=",
-         barsAvailable
-      );
-      return;
-   }
-
-   StructureSignal signal =
-      AnalyzeStructureSignal(
-         symbol,
-         InpConfirmTF,
-         1,
-         InpStructureLookback,
-         ICT_SWING_LEFT,
-         ICT_SWING_RIGHT
-      );
-
-   if(!signal.valid)
-   {
-      Print(
-         "[M15] No confirmed structure event on latest closed ",
-         EnumToString(InpConfirmTF),
-         " candle."
-      );
-      return;
-   }
-
-   int digits =
-      (int)SymbolInfoInteger(
-         symbol,
-         SYMBOL_DIGITS
-      );
-
-   Print(
-      "[M15] event=",
-      StructureEventToString(signal.event),
-      " | previous structure=",
-      StructureDirectionToString(
-         signal.previousStructure
-      ),
-      " | broken level=",
-      DoubleToString(
-         signal.brokenLevel,
-         digits
-      ),
-      " | bullish displacement=",
-      signal.bullishDisplacement,
-      " | bearish displacement=",
-      signal.bearishDisplacement
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Check whether spread is acceptable                               |
-//+------------------------------------------------------------------+
-bool IsSpreadAcceptable(
-   const string symbol
-)
-{
-   long spread = 0;
-
-   if(!SymbolInfoInteger(
-      symbol,
-      SYMBOL_SPREAD,
-      spread
-   ))
-      return(false);
-
-   return(
-      spread <= InpMaxSpreadPts
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Maximum permitted planned risk                                   |
-//+------------------------------------------------------------------+
-double GetMaxRiskMoney()
-{
-   return(InpMaxRiskMoney);
-}
-
-//+------------------------------------------------------------------+
-//| Check whether symbol is available for trading                    |
-//+------------------------------------------------------------------+
-bool IsSymbolTradable(
-   const string symbol
-)
-{
-   if(!SymbolSelect(symbol,true))
-      return(false);
-
-   long tradeMode = 0;
-
-   if(!SymbolInfoInteger(
-      symbol,
-      SYMBOL_TRADE_MODE,
-      tradeMode
-   ))
-      return(false);
-
-   return(
-      tradeMode != SYMBOL_TRADE_MODE_DISABLED
-   );
-}
-//+------------------------------------------------------------------+
+         "[LIQUIDITY] No valid buy-
