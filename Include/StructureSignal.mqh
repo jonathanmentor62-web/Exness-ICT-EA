@@ -1,12 +1,14 @@
 //+------------------------------------------------------------------+
 //| StructureSignal.mqh                                              |
-//| Displacement + MSS + BOS detection for Exness ICT EA             |
+//| ICT market-structure and displacement signal detection          |
 //+------------------------------------------------------------------+
 #ifndef __EXNESS_ICT_STRUCTURE_SIGNAL_MQH__
 #define __EXNESS_ICT_STRUCTURE_SIGNAL_MQH__
 
+#include "MarketStructure.mqh"
+
 //====================================================================
-// STRUCTURE EVENT TYPES
+// STRUCTURE EVENT
 //====================================================================
 
 enum ENUM_STRUCTURE_EVENT
@@ -18,49 +20,52 @@ enum ENUM_STRUCTURE_EVENT
    STRUCTURE_EVENT_BEARISH_BOS
 };
 
+
 //====================================================================
 // STRUCTURE SIGNAL
 //====================================================================
 
 struct StructureSignal
 {
-   //--- Candle displacement
+   bool     valid;
+
+   // Directional displacement.
    bool     bullishDisplacement;
    bool     bearishDisplacement;
 
-   //--- Market Structure Shift
+   // Market Structure Shift.
    bool     bullishMSS;
    bool     bearishMSS;
 
-   //--- Break Of Structure
+   // Break of Structure.
    bool     bullishBOS;
    bool     bearishBOS;
 
-   //--- Main event
+   // Detected event.
    ENUM_STRUCTURE_EVENT event;
 
-   //--- Structure direction BEFORE the signal candle
-   ENUM_STRUCTURE_DIRECTION previousStructure;
+   // Structure before the break.
+   int      previousStructure;
 
-   //--- Level that was broken
+   // Price level that was broken.
    double   brokenLevel;
 
-   //--- Signal candle information
+   // Time of the signal candle.
    datetime signalTime;
-   int      signalShift;
 
-   //--- Valid signal flag
-   bool     valid;
+   // Shift of the signal candle.
+   int      signalShift;
 };
 
+
 //====================================================================
-// RESET
+// SIGNAL RESET
 //====================================================================
 
-void ResetStructureSignal(
-   StructureSignal &signal
-)
+void ResetStructureSignal(StructureSignal &signal)
 {
+   signal.valid = false;
+
    signal.bullishDisplacement = false;
    signal.bearishDisplacement = false;
 
@@ -72,806 +77,703 @@ void ResetStructureSignal(
 
    signal.event = STRUCTURE_EVENT_NONE;
 
-   signal.previousStructure = STRUCTURE_UNKNOWN;
+   signal.previousStructure = 0;
 
    signal.brokenLevel = 0.0;
 
    signal.signalTime = 0;
+
    signal.signalShift = -1;
-
-   signal.valid = false;
 }
+
 
 //====================================================================
-// BASIC CANDLE FUNCTIONS
+// CANDLE HELPERS
 //====================================================================
 
-double GetCandleRange(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int shift
+// Candle range.
+double SS_CandleRange(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int shift
 )
 {
-   if(shift < 0)
-      return(0.0);
+   double high = iHigh(symbol, timeframe, shift);
+   double low  = iLow(symbol, timeframe, shift);
 
-   double high = iHigh(
-      symbol,
-      timeframe,
-      shift
-   );
-
-   double low = iLow(
-      symbol,
-      timeframe,
-      shift
-   );
-
-   if(high <= 0.0 || low <= 0.0)
-      return(0.0);
-
-   double range = high - low;
-
-   if(range <= 0.0)
-      return(0.0);
-
-   return(range);
+   return high - low;
 }
 
-//+------------------------------------------------------------------+
 
-double GetCandleBody(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int shift
+// Candle body.
+double SS_CandleBody(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int shift
 )
 {
-   if(shift < 0)
-      return(0.0);
+   double open  = iOpen(symbol, timeframe, shift);
+   double close = iClose(symbol, timeframe, shift);
 
-   double open = iOpen(
-      symbol,
-      timeframe,
-      shift
-   );
-
-   double close = iClose(
-      symbol,
-      timeframe,
-      shift
-   );
-
-   if(open <= 0.0 || close <= 0.0)
-      return(0.0);
-
-   return(MathAbs(close - open));
+   return MathAbs(close - open);
 }
 
-//+------------------------------------------------------------------+
 
-double GetBodyRatio(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int shift
+// Candle direction.
+//
+//  1 = bullish
+// -1 = bearish
+//  0 = neutral/doji
+int SS_CandleDirection(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int shift
 )
 {
-   double range = GetCandleRange(
+   double open  = iOpen(symbol, timeframe, shift);
+   double close = iClose(symbol, timeframe, shift);
+
+   if(close > open)
+      return 1;
+
+   if(close < open)
+      return -1;
+
+   return 0;
+}
+
+
+//====================================================================
+// DISPLACEMENT
+//====================================================================
+
+// Generic displacement check.
+//
+// A displacement candle must have:
+// - valid range
+// - sufficiently large body relative to range
+// - directional candle
+bool IsDisplacementCandle(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int shift,
+   double minimumBodyRatio
+)
+{
+   double range = SS_CandleRange(
       symbol,
       timeframe,
       shift
    );
 
    if(range <= 0.0)
-      return(0.0);
+      return false;
 
-   double body = GetCandleBody(
+   double body = SS_CandleBody(
       symbol,
       timeframe,
       shift
    );
 
    if(body <= 0.0)
-      return(0.0);
+      return false;
 
-   return(body / range);
+   double ratio = body / range;
+
+   if(ratio < minimumBodyRatio)
+      return false;
+
+   return true;
 }
 
-//====================================================================
-// CANDLE DIRECTION
-//====================================================================
 
-bool IsBullishCandle(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int shift
-)
-{
-   if(shift < 0)
-      return(false);
-
-   double open = iOpen(
-      symbol,
-      timeframe,
-      shift
-   );
-
-   double close = iClose(
-      symbol,
-      timeframe,
-      shift
-   );
-
-   if(open <= 0.0 || close <= 0.0)
-      return(false);
-
-   return(close > open);
-}
-
-//+------------------------------------------------------------------+
-
-bool IsBearishCandle(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int shift
-)
-{
-   if(shift < 0)
-      return(false);
-
-   double open = iOpen(
-      symbol,
-      timeframe,
-      shift
-   );
-
-   double close = iClose(
-      symbol,
-      timeframe,
-      shift
-   );
-
-   if(open <= 0.0 || close <= 0.0)
-      return(false);
-
-   return(close < open);
-}
-
-//====================================================================
-// DISPLACEMENT
-//====================================================================
-
-//+------------------------------------------------------------------+
-//| Bullish displacement                                             |
-//|                                                                  |
-//| A closed bullish candle with a sufficiently large body relative  |
-//| to its total range.                                              |
-//+------------------------------------------------------------------+
-
+// Bullish displacement.
 bool IsBullishDisplacement(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int shift
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int shift,
+   double minimumBodyRatio
 )
 {
-   if(shift < 1)
-      return(false);
-
-   if(!IsBullishCandle(
+   if(!IsDisplacementCandle(
       symbol,
       timeframe,
-      shift
+      shift,
+      minimumBodyRatio
    ))
    {
-      return(false);
+      return false;
    }
 
-   double bodyRatio = GetBodyRatio(
+   return SS_CandleDirection(
       symbol,
       timeframe,
       shift
-   );
-
-   return(bodyRatio >= ICT_MIN_BODY_RATIO);
+   ) > 0;
 }
 
-//+------------------------------------------------------------------+
-//| Bearish displacement                                             |
-//+------------------------------------------------------------------+
 
+// Bearish displacement.
 bool IsBearishDisplacement(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int shift
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int shift,
+   double minimumBodyRatio
 )
 {
-   if(shift < 1)
-      return(false);
-
-   if(!IsBearishCandle(
+   if(!IsDisplacementCandle(
       symbol,
       timeframe,
-      shift
+      shift,
+      minimumBodyRatio
    ))
    {
-      return(false);
+      return false;
    }
 
-   double bodyRatio = GetBodyRatio(
+   return SS_CandleDirection(
       symbol,
       timeframe,
       shift
-   );
-
-   return(bodyRatio >= ICT_MIN_BODY_RATIO);
+   ) < 0;
 }
 
+
 //====================================================================
-// STRUCTURE REFERENCE HELPERS
+// PRE-SIGNAL STRUCTURE
 //====================================================================
 
-//+------------------------------------------------------------------+
-//| Get the most recent confirmed swing high BEFORE signal candle    |
-//+------------------------------------------------------------------+
-
-int GetSignalReferenceSwingHigh(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int signalShift,
-   const int lookback,
-   const int leftBars,
-   const int rightBars
+// Determine the market structure immediately before the signal.
+//
+//  1 = bullish
+// -1 = bearish
+//  0 = neutral
+//
+// This is intentionally based on the confirmed swing structure
+// BEFORE the signal candle, not on the signal candle itself.
+int GetPreSignalStructure(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int signalShift,
+   int lookback,
+   int leftBars,
+   int rightBars
 )
 {
-   if(signalShift < 1)
-      return(-1);
+   SwingPoint recentHigh;
+   SwingPoint previousHigh;
+   SwingPoint recentLow;
+   SwingPoint previousLow;
 
-   /*
-      A swing needs rightBars candles to confirm it.
-
-      Therefore we start far enough back that the signal candle
-      cannot itself participate in confirming the swing.
-   */
-
-   int startShift =
-      signalShift + rightBars + 1;
-
-   return(
+   bool haveHighs =
       FindRecentSwingHigh(
          symbol,
          timeframe,
-         startShift,
          lookback,
          leftBars,
-         rightBars
+         rightBars,
+         recentHigh
       )
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Get the most recent confirmed swing low BEFORE signal candle     |
-//+------------------------------------------------------------------+
-
-int GetSignalReferenceSwingLow(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int signalShift,
-   const int lookback,
-   const int leftBars,
-   const int rightBars
-)
-{
-   if(signalShift < 1)
-      return(-1);
-
-   int startShift =
-      signalShift + rightBars + 1;
-
-   return(
-      FindRecentSwingLow(
-         symbol,
-         timeframe,
-         startShift,
-         lookback,
-         leftBars,
-         rightBars
-      )
-   );
-}
-
-//====================================================================
-// PREVIOUS ESTABLISHED STRUCTURE
-//====================================================================
-
-//+------------------------------------------------------------------+
-//| Determine structure before signal candle                         |
-//|                                                                  |
-//| Bullish = Higher High + Higher Low                               |
-//| Bearish = Lower High + Lower Low                                 |
-//|                                                                  |
-//| Unknown = mixed/insufficient structure                           |
-//+------------------------------------------------------------------+
-
-ENUM_STRUCTURE_DIRECTION GetPreSignalStructure(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int signalShift,
-   const int lookback,
-   const int leftBars,
-   const int rightBars
-)
-{
-   if(signalShift < 1)
-      return(STRUCTURE_UNKNOWN);
-
-   int recentHigh = GetSignalReferenceSwingHigh(
-      symbol,
-      timeframe,
-      signalShift,
-      lookback,
-      leftBars,
-      rightBars
-   );
-
-   int recentLow = GetSignalReferenceSwingLow(
-      symbol,
-      timeframe,
-      signalShift,
-      lookback,
-      leftBars,
-      rightBars
-   );
-
-   if(recentHigh < 0 || recentLow < 0)
-      return(STRUCTURE_UNKNOWN);
-
-   int previousHigh =
+      &&
       FindPreviousSwingHigh(
          symbol,
          timeframe,
-         recentHigh,
+         recentHigh.shift,
          lookback,
          leftBars,
-         rightBars
-      );
-
-   int previousLow =
-      FindPreviousSwingLow(
-         symbol,
-         timeframe,
-         recentLow,
-         lookback,
-         leftBars,
-         rightBars
-      );
-
-   if(previousHigh < 0 || previousLow < 0)
-      return(STRUCTURE_UNKNOWN);
-
-   double recentHighPrice =
-      iHigh(
-         symbol,
-         timeframe,
-         recentHigh
-      );
-
-   double previousHighPrice =
-      iHigh(
-         symbol,
-         timeframe,
+         rightBars,
          previousHigh
       );
 
-   double recentLowPrice =
-      iLow(
+   bool haveLows =
+      FindRecentSwingLow(
          symbol,
          timeframe,
+         lookback,
+         leftBars,
+         rightBars,
          recentLow
-      );
-
-   double previousLowPrice =
-      iLow(
+      )
+      &&
+      FindPreviousSwingLow(
          symbol,
          timeframe,
+         recentLow.shift,
+         lookback,
+         leftBars,
+         rightBars,
          previousLow
       );
 
-   if(
-      recentHighPrice <= 0.0 ||
-      previousHighPrice <= 0.0 ||
-      recentLowPrice <= 0.0 ||
-      previousLowPrice <= 0.0
-   )
+   bool bullishStructure = false;
+   bool bearishStructure = false;
+
+   if(haveHighs && haveLows)
    {
-      return(STRUCTURE_UNKNOWN);
+      bullishStructure =
+         recentHigh.price > previousHigh.price &&
+         recentLow.price  > previousLow.price;
+
+      bearishStructure =
+         recentHigh.price < previousHigh.price &&
+         recentLow.price  < previousLow.price;
    }
 
-   bool higherHigh =
-      recentHighPrice > previousHighPrice;
+   if(bullishStructure)
+      return 1;
 
-   bool higherLow =
-      recentLowPrice > previousLowPrice;
+   if(bearishStructure)
+      return -1;
 
-   bool lowerHigh =
-      recentHighPrice < previousHighPrice;
-
-   bool lowerLow =
-      recentLowPrice < previousLowPrice;
-
-   if(higherHigh && higherLow)
-      return(STRUCTURE_BULLISH);
-
-   if(lowerHigh && lowerLow)
-      return(STRUCTURE_BEARISH);
-
-   return(STRUCTURE_UNKNOWN);
+   return 0;
 }
 
+
 //====================================================================
-// BULLISH MSS
+// BULLISH STRUCTURE BREAK
 //====================================================================
 
-//+------------------------------------------------------------------+
-//| Bullish Market Structure Shift                                   |
-//|                                                                  |
-//| Definition used by this EA:                                     |
-//|                                                                  |
-//| 1. Previous structure is bearish.                               |
-//| 2. Signal candle closes above the most recent confirmed swing   |
-//|    high.                                                         |
-//|                                                                  |
-//| This represents a break AGAINST the previous bearish structure. |
-//+------------------------------------------------------------------+
-
-bool DetectBullishMSS(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const int lookback,
-   const int leftBars,
-   const int rightBars,
+// Detect a bullish break of the latest confirmed swing high.
+//
+// A bullish close above the swing high is required.
+bool DetectBullishStructureBreak(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int signalShift,
+   int lookback,
+   int leftBars,
+   int rightBars,
    double &brokenLevel
 )
 {
    brokenLevel = 0.0;
 
-   if(candleShift < 1)
-      return(false);
+   SwingPoint swingHigh;
 
-   ENUM_STRUCTURE_DIRECTION previousStructure =
-      GetPreSignalStructure(
-         symbol,
-         timeframe,
-         candleShift,
-         lookback,
-         leftBars,
-         rightBars
-      );
+   if(!FindRecentSwingHigh(
+      symbol,
+      timeframe,
+      lookback,
+      leftBars,
+      rightBars,
+      swingHigh
+   ))
+   {
+      return false;
+   }
 
-   if(previousStructure != STRUCTURE_BEARISH)
-      return(false);
+   // Do not allow the signal candle itself to be used as the
+   // swing candle.
+   if(swingHigh.shift <= signalShift)
+      return false;
 
-   int swingHighShift =
-      GetSignalReferenceSwingHigh(
-         symbol,
-         timeframe,
-         candleShift,
-         lookback,
-         leftBars,
-         rightBars
-      );
+   double closePrice =
+      iClose(symbol, timeframe, signalShift);
 
-   if(swingHighShift < 0)
-      return(false);
+   if(closePrice <= 0.0)
+      return false;
 
-   double swingHigh =
-      iHigh(
-         symbol,
-         timeframe,
-         swingHighShift
-      );
+   if(closePrice <= swingHigh.price)
+      return false;
 
-   double close =
-      iClose(
-         symbol,
-         timeframe,
-         candleShift
-      );
+   brokenLevel = swingHigh.price;
 
-   if(swingHigh <= 0.0 || close <= 0.0)
-      return(false);
-
-   if(close <= swingHigh)
-      return(false);
-
-   brokenLevel = swingHigh;
-
-   return(true);
+   return true;
 }
 
+
 //====================================================================
-// BEARISH MSS
+// BEARISH STRUCTURE BREAK
 //====================================================================
 
-//+------------------------------------------------------------------+
-//| Bearish Market Structure Shift                                   |
-//|                                                                  |
-//| 1. Previous structure is bullish.                               |
-//| 2. Signal candle closes below the most recent confirmed swing   |
-//|    low.                                                         |
-//+------------------------------------------------------------------+
-
-bool DetectBearishMSS(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const int lookback,
-   const int leftBars,
-   const int rightBars,
+// Detect a bearish break of the latest confirmed swing low.
+bool DetectBearishStructureBreak(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int signalShift,
+   int lookback,
+   int leftBars,
+   int rightBars,
    double &brokenLevel
 )
 {
    brokenLevel = 0.0;
 
-   if(candleShift < 1)
-      return(false);
+   SwingPoint swingLow;
 
-   ENUM_STRUCTURE_DIRECTION previousStructure =
-      GetPreSignalStructure(
-         symbol,
-         timeframe,
-         candleShift,
-         lookback,
-         leftBars,
-         rightBars
-      );
+   if(!FindRecentSwingLow(
+      symbol,
+      timeframe,
+      lookback,
+      leftBars,
+      rightBars,
+      swingLow
+   ))
+   {
+      return false;
+   }
 
-   if(previousStructure != STRUCTURE_BULLISH)
-      return(false);
+   // Do not allow the signal candle itself to be used as the
+   // swing candle.
+   if(swingLow.shift <= signalShift)
+      return false;
 
-   int swingLowShift =
-      GetSignalReferenceSwingLow(
-         symbol,
-         timeframe,
-         candleShift,
-         lookback,
-         leftBars,
-         rightBars
-      );
+   double closePrice =
+      iClose(symbol, timeframe, signalShift);
 
-   if(swingLowShift < 0)
-      return(false);
+   if(closePrice <= 0.0)
+      return false;
 
-   double swingLow =
-      iLow(
-         symbol,
-         timeframe,
-         swingLowShift
-      );
+   if(closePrice >= swingLow.price)
+      return false;
 
-   double close =
-      iClose(
-         symbol,
-         timeframe,
-         candleShift
-      );
+   brokenLevel = swingLow.price;
 
-   if(swingLow <= 0.0 || close <= 0.0)
-      return(false);
-
-   if(close >= swingLow)
-      return(false);
-
-   brokenLevel = swingLow;
-
-   return(true);
+   return true;
 }
 
+
 //====================================================================
-// BULLISH BOS
+// MAIN STRUCTURE ANALYSIS
 //====================================================================
 
-//+------------------------------------------------------------------+
-//| Bullish Break Of Structure                                      |
-//|                                                                  |
-//| Definition used by this EA:                                     |
-//|                                                                  |
-//| 1. Previous structure is already bullish.                       |
-//| 2. Signal candle closes above the latest confirmed swing high.  |
-//|                                                                  |
-//| This is continuation, NOT a market-structure shift.             |
-//+------------------------------------------------------------------+
-
-bool DetectBullishBOS(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const int lookback,
-   const int leftBars,
-   const int rightBars,
-   double &brokenLevel
+bool AnalyzeStructureSignal(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int signalShift,
+   int lookback,
+   int leftBars,
+   int rightBars,
+   double minimumBodyRatio,
+   StructureSignal &signal
 )
 {
-   brokenLevel = 0.0;
-
-   if(candleShift < 1)
-      return(false);
-
-   ENUM_STRUCTURE_DIRECTION previousStructure =
-      GetPreSignalStructure(
-         symbol,
-         timeframe,
-         candleShift,
-         lookback,
-         leftBars,
-         rightBars
-      );
-
-   if(previousStructure != STRUCTURE_BULLISH)
-      return(false);
-
-   int swingHighShift =
-      GetSignalReferenceSwingHigh(
-         symbol,
-         timeframe,
-         candleShift,
-         lookback,
-         leftBars,
-         rightBars
-      );
-
-   if(swingHighShift < 0)
-      return(false);
-
-   double swingHigh =
-      iHigh(
-         symbol,
-         timeframe,
-         swingHighShift
-      );
-
-   double close =
-      iClose(
-         symbol,
-         timeframe,
-         candleShift
-      );
-
-   if(swingHigh <= 0.0 || close <= 0.0)
-      return(false);
-
-   if(close <= swingHigh)
-      return(false);
-
-   brokenLevel = swingHigh;
-
-   return(true);
-}
-
-//====================================================================
-// BEARISH BOS
-//====================================================================
-
-//+------------------------------------------------------------------+
-//| Bearish Break Of Structure                                      |
-//|                                                                  |
-//| 1. Previous structure is already bearish.                       |
-//| 2. Signal candle closes below the latest confirmed swing low.   |
-//+------------------------------------------------------------------+
-
-bool DetectBearishBOS(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const int lookback,
-   const int leftBars,
-   const int rightBars,
-   double &brokenLevel
-)
-{
-   brokenLevel = 0.0;
-
-   if(candleShift < 1)
-      return(false);
-
-   ENUM_STRUCTURE_DIRECTION previousStructure =
-      GetPreSignalStructure(
-         symbol,
-         timeframe,
-         candleShift,
-         lookback,
-         leftBars,
-         rightBars
-      );
-
-   if(previousStructure != STRUCTURE_BEARISH)
-      return(false);
-
-   int swingLowShift =
-      GetSignalReferenceSwingLow(
-         symbol,
-         timeframe,
-         candleShift,
-         lookback,
-         leftBars,
-         rightBars
-      );
-
-   if(swingLowShift < 0)
-      return(false);
-
-   double swingLow =
-      iLow(
-         symbol,
-         timeframe,
-         swingLowShift
-      );
-
-   double close =
-      iClose(
-         symbol,
-         timeframe,
-         candleShift
-      );
-
-   if(swingLow <= 0.0 || close <= 0.0)
-      return(false);
-
-   if(close >= swingLow)
-      return(false);
-
-   brokenLevel = swingLow;
-
-   return(true);
-}
-
-//====================================================================
-// MAIN STRUCTURE ANALYZER
-//====================================================================
-
-//+------------------------------------------------------------------+
-//| Analyze a closed candle                                          |
-//|                                                                  |
-//| Signal priority:                                                 |
-//|                                                                  |
-//| 1. MSS                                                            |
-//| 2. BOS                                                            |
-//|                                                                  |
-//| Displacement is reported independently.                         |
-//+------------------------------------------------------------------+
-
-StructureSignal AnalyzeStructureSignal(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int candleShift,
-   const int lookback,
-   const int leftBars,
-   const int rightBars
-)
-{
-   StructureSignal signal;
-
    ResetStructureSignal(signal);
 
-   //--- Only closed candles are allowed.
-   if(candleShift < 1)
-      return(signal);
+   if(signalShift < 1)
+      return false;
 
-   signal.signalShift = candleShift;
+   int bars = Bars(symbol, timeframe);
+
+   if(bars <= 0)
+      return false;
+
+   if(signalShift >= bars)
+      return false;
+
+   // ---------------------------------------------------------------
+   // Step 1: Detect displacement.
+   // ---------------------------------------------------------------
+
+   signal.bullishDisplacement =
+      IsBullishDisplacement(
+         symbol,
+         timeframe,
+         signalShift,
+         minimumBodyRatio
+      );
+
+   signal.bearishDisplacement =
+      IsBearishDisplacement(
+         symbol,
+         timeframe,
+         signalShift,
+         minimumBodyRatio
+      );
+
+   // No displacement = no ICT structure signal.
+   if(
+      !signal.bullishDisplacement &&
+      !signal.bearishDisplacement
+   )
+   {
+      return false;
+   }
+
+
+   // ---------------------------------------------------------------
+   // Step 2: Determine structure before the break.
+   // ---------------------------------------------------------------
+
+   signal.previousStructure =
+      GetPreSignalStructure(
+         symbol,
+         timeframe,
+         signalShift,
+         lookback,
+         leftBars,
+         rightBars
+      );
+
+
+   // ---------------------------------------------------------------
+   // Step 3: Detect bullish break.
+   // ---------------------------------------------------------------
+
+   double bullishBrokenLevel = 0.0;
+
+   bool bullishBreak =
+      DetectBullishStructureBreak(
+         symbol,
+         timeframe,
+         signalShift,
+         lookback,
+         leftBars,
+         rightBars,
+         bullishBrokenLevel
+      );
+
+
+   // ---------------------------------------------------------------
+   // Step 4: Detect bearish break.
+   // ---------------------------------------------------------------
+
+   double bearishBrokenLevel = 0.0;
+
+   bool bearishBreak =
+      DetectBearishStructureBreak(
+         symbol,
+         timeframe,
+         signalShift,
+         lookback,
+         leftBars,
+         rightBars,
+         bearishBrokenLevel
+      );
+
+
+   // ---------------------------------------------------------------
+   // Step 5: Require directional agreement.
+   //
+   // Bullish displacement must break upward.
+   // Bearish displacement must break downward.
+   // ---------------------------------------------------------------
+
+   bool bullishSignal =
+      signal.bullishDisplacement &&
+      bullishBreak;
+
+   bool bearishSignal =
+      signal.bearishDisplacement &&
+      bearishBreak;
+
+
+   // ---------------------------------------------------------------
+   // Step 6: Classify MSS vs BOS.
+   //
+   // MSS:
+   //   break against the existing structure.
+   //
+   // BOS:
+   //   break in the direction of the existing structure.
+   //
+   // If structure is neutral/unclear, classify the directional
+   // structure break as BOS rather than inventing an MSS.
+   // ---------------------------------------------------------------
+
+   if(bullishSignal)
+   {
+      signal.brokenLevel = bullishBrokenLevel;
+
+      if(signal.previousStructure < 0)
+      {
+         signal.bullishMSS = true;
+         signal.event = STRUCTURE_EVENT_BULLISH_MSS;
+      }
+      else
+      {
+         signal.bullishBOS = true;
+         signal.event = STRUCTURE_EVENT_BULLISH_BOS;
+      }
+   }
+   else if(bearishSignal)
+   {
+      signal.brokenLevel = bearishBrokenLevel;
+
+      if(signal.previousStructure > 0)
+      {
+         signal.bearishMSS = true;
+         signal.event = STRUCTURE_EVENT_BEARISH_MSS;
+      }
+      else
+      {
+         signal.bearishBOS = true;
+         signal.event = STRUCTURE_EVENT_BEARISH_BOS;
+      }
+   }
+   else
+   {
+      return false;
+   }
+
+
+   // ---------------------------------------------------------------
+   // Step 7: Store signal metadata.
+   // ---------------------------------------------------------------
+
+   signal.signalShift = signalShift;
 
    signal.signalTime =
       iTime(
          symbol,
          timeframe,
-         candleShift
+         signalShift
       );
 
-   if(signal.signalTime <= 0)
-      return(signal);
+   signal.valid = true;
 
-   //================================================================
-   // DISPLACEMENT
-   //================================================================
+   return true;
+}
 
-   signal.bullishDisplacement =
-      IsBullishDisplacement(
-  
+
+//====================================================================
+// SIGNAL DIRECTION
+//====================================================================
+
+// Returns:
+//
+//  1 = bullish
+// -1 = bearish
+//  0 = no direction
+int GetSignalDirection(
+   StructureSignal &signal
+)
+{
+   if(signal.bullishMSS || signal.bullishBOS)
+      return 1;
+
+   if(signal.bearishMSS || signal.bearishBOS)
+      return -1;
+
+   return 0;
+}
+
+
+//====================================================================
+// SIGNAL TYPE HELPERS
+//====================================================================
+
+bool IsMSSSignal(
+   StructureSignal &signal
+)
+{
+   return
+      signal.bullishMSS ||
+      signal.bearishMSS;
+}
+
+
+bool IsBOSSignal(
+   StructureSignal &signal
+)
+{
+   return
+      signal.bullishBOS ||
+      signal.bearishBOS;
+}
+
+
+//====================================================================
+// DIRECTIONAL VALIDATION
+//====================================================================
+
+// Confirm that a signal contains bullish displacement AND
+// bullish structure.
+bool HasBullishDisplacementAndStructure(
+   StructureSignal &signal
+)
+{
+   return
+      signal.valid &&
+      signal.bullishDisplacement &&
+      (
+         signal.bullishMSS ||
+         signal.bullishBOS
+      );
+}
+
+
+// Confirm that a signal contains bearish displacement AND
+// bearish structure.
+bool HasBearishDisplacementAndStructure(
+   StructureSignal &signal
+)
+{
+   return
+      signal.valid &&
+      signal.bearishDisplacement &&
+      (
+         signal.bearishMSS ||
+         signal.bearishBOS
+      );
+}
+
+
+//====================================================================
+// EVENT TO STRING
+//====================================================================
+
+string StructureEventToString(
+   ENUM_STRUCTURE_EVENT event
+)
+{
+   switch(event)
+   {
+      case STRUCTURE_EVENT_BULLISH_MSS:
+         return "BULLISH MSS";
+
+      case STRUCTURE_EVENT_BEARISH_MSS:
+         return "BEARISH MSS";
+
+      case STRUCTURE_EVENT_BULLISH_BOS:
+         return "BULLISH BOS";
+
+      case STRUCTURE_EVENT_BEARISH_BOS:
+         return "BEARISH BOS";
+
+      default:
+         return "NONE";
+   }
+}
+
+
+//====================================================================
+// DEBUG DESCRIPTION
+//====================================================================
+
+string StructureSignalDescription(
+   StructureSignal &signal
+)
+{
+   if(!signal.valid)
+      return "INVALID STRUCTURE SIGNAL";
+
+   string direction = "NONE";
+
+   if(GetSignalDirection(signal) > 0)
+      direction = "BULLISH";
+   else if(GetSignalDirection(signal) < 0)
+      direction = "BEARISH";
+
+   string eventText =
+      StructureEventToString(signal.event);
+
+   string structureText =
+      MarketStructureBiasToString(
+         signal.previousStructure
+      );
+
+   return StringFormat(
+      "%s | Direction=%s | PreviousStructure=%s | BrokenLevel=%f | Shift=%d",
+      eventText,
+      direction,
+      structureText,
+      signal.brokenLevel,
+      signal.signalShift
+   );
+}
+
+
+//+------------------------------------------------------------------+
+#endif
+//+------------------------------------------------------------------+
