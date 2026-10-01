@@ -1667,3 +1667,923 @@ bool AnalyzeM5ExecutionConfirmation(
 
    return(true);
 }
+//==================================================================
+// NORMAL ICT PIPELINE
+//==================================================================
+//
+// Complete NORMAL sequence:
+//
+// H4
+//  |
+//  +--> structure
+//  +--> liquidity context
+//  +--> FVG / OB context
+//  |
+//  v
+// M15
+//  |
+//  +--> displacement
+//  +--> MSS / BOS
+//  +--> confirmation
+//  |
+//  v
+// M5
+//  |
+//  +--> execution confirmation
+//  |
+//  v
+// Execution engine
+//
+// This function currently prepares and validates the complete
+// structural pipeline. The actual order execution remains controlled
+// by the central execution/risk engine.
+//==================================================================
+
+bool ProcessNormalICTPipeline(
+   const string symbol
+)
+{
+   //---------------------------------------------------------------
+   // Trading mode check
+   //---------------------------------------------------------------
+
+   if(
+      InpTradingMode==
+      EA_MODE_SCALPER
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Daily safety
+   //---------------------------------------------------------------
+
+   if(
+      !IsDailyTradingAllowed()
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Symbol
+   //---------------------------------------------------------------
+
+   if(
+      !IsSymbolTradable(
+         symbol
+      )
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Spread
+   //---------------------------------------------------------------
+
+   if(
+      !IsSpreadAcceptable(
+         symbol
+      )
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // STEP 1
+   // H4 primary structure
+   //---------------------------------------------------------------
+
+   if(
+      !BuildH4Setup(
+         symbol
+      )
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // STEP 2
+   // M15 confirmation
+   //---------------------------------------------------------------
+
+   if(
+      !AnalyzeM15Confirmation(
+         symbol,
+         g_h4SetupDirection,
+         g_m15Confirmation
+      )
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // STEP 3
+   // M5 execution confirmation
+   //---------------------------------------------------------------
+
+   if(
+      !AnalyzeM5ExecutionConfirmation(
+         symbol,
+         g_h4SetupDirection
+      )
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // COMPLETE
+   //---------------------------------------------------------------
+
+   Print(
+      "[ICT PIPELINE] COMPLETE | ",
+      symbol,
+      " | H4 -> M15 -> M5 | Direction=",
+      StructureDirectionToString(
+         g_h4SetupDirection
+      )
+   );
+
+
+   //---------------------------------------------------------------
+   // IMPORTANT
+   //
+   // The structural pipeline is now confirmed.
+   //
+   // Normal-mode order execution will be connected to the dedicated
+   // structural execution function after the final confirmation
+   // layer is validated.
+   //---------------------------------------------------------------
+
+   return(true);
+}
+
+
+//==================================================================
+// NORMAL PIPELINE STATUS
+//==================================================================
+
+void PrintNormalPipelineStatus(
+   const string symbol
+)
+{
+   Print(
+      "------------------------------------------------------------"
+   );
+
+
+   Print(
+      "[NORMAL STATUS] Symbol=",
+      symbol
+   );
+
+
+   Print(
+      "[NORMAL STATUS] H4 Setup=",
+      (
+         g_h4SetupActive
+         ?
+         "ACTIVE"
+         :
+         "INACTIVE"
+      )
+   );
+
+
+   if(
+      g_h4SetupActive
+   )
+   {
+      Print(
+         "[NORMAL STATUS] H4 Direction=",
+         StructureDirectionToString(
+            g_h4SetupDirection
+         )
+      );
+   }
+
+
+   Print(
+      "[NORMAL STATUS] M15=",
+      (
+         g_m15Confirmation.confirmed
+         ?
+         "CONFIRMED"
+         :
+         "WAITING"
+      )
+   );
+
+
+   Print(
+      "[NORMAL STATUS] M5=",
+      (
+         g_m5Confirmation.valid
+         ?
+         "VALID"
+         :
+         "WAITING"
+      )
+   );
+
+
+   Print(
+      "------------------------------------------------------------"
+   );
+}
+
+
+//==================================================================
+// SYMBOL LIST BUILDER
+//==================================================================
+//
+// When enabled, the EA scans symbols currently available in the
+// MT5 Market Watch.
+//
+// This avoids hard-coding only XAUUSD/EURUSD and allows Exness
+// symbol suffixes such as XAUUSDm to be handled automatically.
+//==================================================================
+
+int BuildSymbolList(
+   string &symbols[]
+)
+{
+   ArrayResize(
+      symbols,
+      0
+   );
+
+
+   int total=
+      SymbolsTotal(
+         InpScanMarketWatchSymbols,
+         true
+      );
+
+
+   if(total<=0)
+      return(0);
+
+
+   int count=
+      0;
+
+
+   for(
+      int i=0;
+      i<total;
+      i++
+   )
+   {
+      string symbol=
+         SymbolName(
+            i,
+            InpScanMarketWatchSymbols
+         );
+
+
+      if(symbol=="")
+         continue;
+
+
+      //------------------------------------------------------------
+      // Make sure the symbol can be selected.
+      //------------------------------------------------------------
+
+      if(
+         !SymbolSelect(
+            symbol,
+            true
+         )
+      )
+      {
+         continue;
+      }
+
+
+      //------------------------------------------------------------
+      // Only trade symbols that have a valid trade mode.
+      //------------------------------------------------------------
+
+      if(
+         !IsSymbolTradable(
+            symbol
+         )
+      )
+      {
+         continue;
+      }
+
+
+      //------------------------------------------------------------
+      // Add symbol
+      //------------------------------------------------------------
+
+      ArrayResize(
+         symbols,
+         count+1
+      );
+
+
+      symbols[count]=
+         symbol;
+
+
+      count++;
+   }
+
+
+   return(count);
+}
+
+
+//==================================================================
+// SCALPER SYMBOL PROCESSING
+//==================================================================
+//
+// The scalper operates independently from the H4/M15/M5 normal
+// pipeline.
+//
+// Its primary information source is:
+//
+// M1 closed candles
+//       +
+// short-term tick-pressure proxy
+//       +
+// momentum/rejection
+//       |
+//       v
+// rapid entry / management
+//
+// Risk remains controlled by the same central RiskEngine.
+//==================================================================
+
+bool ProcessScalperSymbol(
+   const string symbol
+)
+{
+   //---------------------------------------------------------------
+   // Mode
+   //---------------------------------------------------------------
+
+   if(
+      InpTradingMode==
+      EA_MODE_NORMAL
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Daily protection
+   //---------------------------------------------------------------
+
+   if(
+      !IsDailyTradingAllowed()
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Symbol
+   //---------------------------------------------------------------
+
+   if(
+      !IsSymbolTradable(
+         symbol
+      )
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Spread
+   //---------------------------------------------------------------
+
+   if(
+      !IsSpreadAcceptable(
+         symbol
+      )
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Generate M1 signal
+   //---------------------------------------------------------------
+
+   M1ScalpSignal signal;
+
+
+   if(
+      !M1_BuildSignal(
+         symbol,
+         signal
+      )
+   )
+   {
+      return(false);
+   }
+
+
+   if(!signal.valid)
+      return(false);
+
+
+   //---------------------------------------------------------------
+   // Score protection
+   //---------------------------------------------------------------
+
+   if(
+      signal.score<
+      InpScalpMinScore
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Diagnostic
+   //---------------------------------------------------------------
+
+   Print(
+      "[SCALPER SIGNAL] ",
+      symbol,
+      " | Score=",
+      DoubleToString(
+         signal.score,
+         1
+      ),
+      " | Entry=",
+      DoubleToString(
+         signal.entry,
+         (int)SymbolInfoInteger(
+            symbol,
+            SYMBOL_DIGITS
+         )
+      ),
+      " | SL=",
+      DoubleToString(
+         signal.stopLoss,
+         (int)SymbolInfoInteger(
+            symbol,
+            SYMBOL_DIGITS
+         )
+      ),
+      " | TP=",
+      DoubleToString(
+         signal.takeProfit,
+         (int)SymbolInfoInteger(
+            symbol,
+            SYMBOL_DIGITS
+         )
+      ),
+      " | Reason=",
+      signal.reason
+   );
+
+
+   //---------------------------------------------------------------
+   // Send signal to central TradeEngine
+   //---------------------------------------------------------------
+
+   bool processed=
+      TE_ProcessScalp(
+         g_tradeEngine,
+         Trade,
+         symbol,
+         signal,
+         InpRiskPercent,
+         InpMaxTotalRiskPct,
+         InpMagicNumber,
+         InpEnableTrading
+      );
+
+
+   return(processed);
+}
+
+
+//==================================================================
+// MANAGE EXISTING SCALPER POSITIONS
+//==================================================================
+//
+// Existing positions continue to be managed even when daily new
+// entries are locked.
+//
+// This is important because a daily lock must stop NEW exposure,
+// not disable emergency exits.
+//==================================================================
+
+void ManageScalperPositions(
+   const string symbol
+)
+{
+   TE_ManageScalps(
+      g_tradeEngine,
+      Trade,
+      symbol,
+      InpEnableTrading
+   );
+}
+
+
+//==================================================================
+// PROCESS ONE SYMBOL
+//==================================================================
+
+void ProcessSymbol(
+   const string symbol
+)
+{
+   if(symbol=="")
+      return;
+
+
+   //---------------------------------------------------------------
+   // Always manage existing scalper positions first.
+   //---------------------------------------------------------------
+
+   if(
+      InpTradingMode==
+      EA_MODE_SCALPER ||
+      InpTradingMode==
+      EA_MODE_AUTO
+   )
+   {
+      ManageScalperPositions(
+         symbol
+      );
+   }
+
+
+   //---------------------------------------------------------------
+   // New entries are disabled by daily protection.
+   //---------------------------------------------------------------
+
+   if(
+      !IsDailyTradingAllowed()
+   )
+   {
+      return;
+   }
+
+
+   //---------------------------------------------------------------
+   // SCALPER
+   //---------------------------------------------------------------
+
+   if(
+      InpTradingMode==
+      EA_MODE_SCALPER ||
+      InpTradingMode==
+      EA_MODE_AUTO
+   )
+   {
+      ProcessScalperSymbol(
+         symbol
+      );
+   }
+
+
+   //---------------------------------------------------------------
+   // NORMAL
+   //---------------------------------------------------------------
+
+   if(
+      InpTradingMode==
+      EA_MODE_NORMAL ||
+      InpTradingMode==
+      EA_MODE_AUTO
+   )
+   {
+      ProcessNormalICTPipeline(
+         symbol
+      );
+   }
+}
+
+
+//==================================================================
+// SCAN ALL MARKET WATCH SYMBOLS
+//==================================================================
+
+void ScanMarket()
+{
+   string symbols[];
+
+
+   int count=
+      BuildSymbolList(
+         symbols
+      );
+
+
+   if(count<=0)
+   {
+      Print(
+         "[SCAN] No tradable Market Watch symbols found."
+      );
+
+
+      return;
+   }
+
+
+   //---------------------------------------------------------------
+   // Scan each symbol
+   //---------------------------------------------------------------
+
+   for(
+      int i=0;
+      i<count;
+      i++
+   )
+   {
+      ProcessSymbol(
+         symbols[i]
+      );
+   }
+}
+
+
+//==================================================================
+// RISK STATUS
+//==================================================================
+
+void PrintRiskStatus()
+{
+   double equity=
+      RE_GetEquity();
+
+
+   double riskPercent=
+      RE_GetRiskPercent(
+         InpRiskPercent
+      );
+
+
+   double riskMoney=
+      RE_GetRiskMoney(
+         InpRiskPercent
+      );
+
+
+   double openRiskMoney=
+      RE_GetOpenRiskMoney(
+         InpMagicNumber
+      );
+
+
+   double openRiskPercent=
+      RE_GetOpenRiskPercent(
+         InpMagicNumber
+      );
+
+
+   Print(
+      "[RISK] Equity=",
+      DoubleToString(
+         equity,
+         2
+      ),
+      " | ConfigRisk=",
+      DoubleToString(
+         riskPercent,
+         2
+      ),
+      "%",
+      " | RiskMoney=",
+      DoubleToString(
+         riskMoney,
+         2
+      ),
+      " | OpenRisk=",
+      DoubleToString(
+         openRiskMoney,
+         2
+      ),
+      " (",
+      DoubleToString(
+         openRiskPercent,
+         2
+      ),
+      "%)"
+   );
+}
+
+
+//==================================================================
+// MODE STATUS
+//==================================================================
+
+string TradingModeToString()
+{
+   switch(InpTradingMode)
+   {
+      case EA_MODE_NORMAL:
+         return("NORMAL");
+
+      case EA_MODE_SCALPER:
+         return("SCALPER");
+
+      case EA_MODE_AUTO:
+         return("AUTO");
+   }
+
+
+   return("UNKNOWN");
+}
+
+
+//==================================================================
+// PRINT EA STATUS
+//==================================================================
+
+void PrintEAStatus()
+{
+   Print(
+      "============================================================"
+   );
+
+
+   Print(
+      "EXNESS ICT EA STATUS"
+   );
+
+
+   Print(
+      "Mode=",
+      TradingModeToString()
+   );
+
+
+   Print(
+      "Trading=",
+      (
+         InpEnableTrading
+         ?
+         "ENABLED"
+         :
+         "DISABLED"
+      )
+   );
+
+
+   Print(
+      "Primary TF=",
+      EnumToString(
+         InpPrimaryTF
+      )
+   );
+
+
+   Print(
+      "Confirm TF=",
+      EnumToString(
+         InpConfirmTF
+      )
+   );
+
+
+   Print(
+      "Entry TF=",
+      EnumToString(
+         InpEntryTF
+      )
+   );
+
+
+   Print(
+      "Risk/trade=",
+      DoubleToString(
+         InpRiskPercent,
+         2
+      ),
+      "%"
+   );
+
+
+   Print(
+      "Max total open risk=",
+      DoubleToString(
+         InpMaxTotalRiskPct,
+         2
+      ),
+      "%"
+   );
+
+
+   Print(
+      "Daily loss lock=",
+      DoubleToString(
+         InpDailyLossLimitPct,
+         2
+      ),
+      "%"
+   );
+
+
+   Print(
+      "Daily profit target=",
+      DoubleToString(
+         InpDailyProfitTargetMoney,
+         2
+      )
+   );
+
+
+   Print(
+      "Magic=",
+      (string)InpMagicNumber
+   );
+
+
+   Print(
+      "============================================================"
+   );
+}
+
+
+//==================================================================
+// INITIALIZE DAILY STATE
+//==================================================================
+
+void InitializeDailyState()
+{
+   g_dayStart=
+      GetDayStart();
+
+
+   g_dayStartEquity=
+      AccountInfoDouble(
+         ACCOUNT_EQUITY
+      );
+
+
+   g_dailyLocked=
+      false;
+
+
+   Print(
+      "[DAILY] Start equity=",
+      DoubleToString(
+         g_dayStartEquity,
+         2
+      )
+   );
+}
+
+
+//==================================================================
+// INITIALIZE TRADE ENGINE
+//==================================================================
+
+bool InitializeTradeEngine()
+{
+   TE_ResetState(
+      g_tradeEngine
+   );
+
+
+   bool initialized=
+      TE_Initialize(
+         g_tradeEngine,
+         InpMagicNumber
+      );
+
+
+   if(!initialized)
+   {
+      Print(
+         "[ERROR] TradeEngine initialization failed."
+      );
+
+
+      return(false);
+   }
+
+
+   return(true);
+}
