@@ -2,24 +2,26 @@
 #define __EXNESS_ICT_TRADE_ENGINE_MQH__
 
 #include <Trade/Trade.mqh>
+
 #include "Config.mqh"
 #include "RiskEngine.mqh"
 #include "M1Scalper.mqh"
 #include "ExecutionEngine.mqh"
 
+
 // ============================================================
 // TRADE ENGINE
-// Adapter layer for the Exness ICT EA.
+// Thin adapter around ExecutionEngine.mqh.
 //
-// ExecutionEngine.mqh contains the actual order execution logic.
-// This file provides a clean TradeEngine interface around it.
+// ExecutionEngine remains responsible for:
+// - broker execution
+// - spread checks
+// - stop/TP validation
+// - risk validation
+// - equity-based lot sizing
+// - duplicate/opposite-position protection
 //
-// IMPORTANT:
-// - No martingale
-// - No forced lot doubling
-// - RiskEngine remains the authority for lot sizing
-// - Trading is blocked when tradingEnabled == false
-// - ExecutionEngine performs the final broker/risk checks
+// This file only provides a clean interface for the EA.
 // ============================================================
 
 
@@ -30,31 +32,27 @@ struct TradeEngineResult
 {
    bool     success;
    bool     attempted;
-   string   message;
+
    ulong    ticket;
    double   volume;
-   double   entry;
-   double   stopLoss;
-   double   takeProfit;
-   int      retcode;
+   double   riskMoney;
+
+   string   message;
 
    void Reset()
    {
-      success    = false;
-      attempted  = false;
-      message    = "";
-      ticket     = 0;
-      volume     = 0.0;
-      entry      = 0.0;
-      stopLoss   = 0.0;
-      takeProfit = 0.0;
-      retcode    = 0;
+      success   = false;
+      attempted = false;
+      ticket    = 0;
+      volume    = 0.0;
+      riskMoney = 0.0;
+      message   = "";
    }
 };
 
 
 // ------------------------------------------------------------
-// Initialize result
+// Reset result
 // ------------------------------------------------------------
 void TE_ResetResult(TradeEngineResult &result)
 {
@@ -63,7 +61,7 @@ void TE_ResetResult(TradeEngineResult &result)
 
 
 // ------------------------------------------------------------
-// Count EA positions
+// Count all EA positions
 // ------------------------------------------------------------
 int TE_CountOurPositions(const ulong magic)
 {
@@ -72,30 +70,44 @@ int TE_CountOurPositions(const ulong magic)
 
 
 // ------------------------------------------------------------
-// Count EA positions on one symbol
+// Count EA positions on a specific symbol
 // ------------------------------------------------------------
-int TE_CountSymbolPositions(const string symbol,
-                            const ulong magic)
+int TE_CountSymbolPositions(const ulong magic,
+                            const string symbol)
 {
-   return EX_CountSymbolPositions(symbol, magic);
+   return EX_CountOurPositions(
+      magic,
+      symbol
+   );
 }
 
 
 // ------------------------------------------------------------
-// Check whether a symbol already has an opposite position
+// Check for an opposite position
+//
+// IMPORTANT:
+// ExecutionEngine signature is:
+//
+// EX_HasOppositePosition(
+//    const ulong magic,
+//    const string symbol,
+//    const ENUM_ORDER_TYPE orderType
+// );
 // ------------------------------------------------------------
-bool TE_HasOppositePosition(const string symbol,
-                            const ENUM_ORDER_TYPE orderType,
-                            const ulong magic)
+bool TE_HasOppositePosition(const ulong magic,
+                            const string symbol,
+                            const ENUM_ORDER_TYPE orderType)
 {
-   return EX_HasOppositePosition(symbol, orderType, magic);
+   return EX_HasOppositePosition(
+      magic,
+      symbol,
+      orderType
+   );
 }
 
 
 // ------------------------------------------------------------
 // Open M1 scalp
-//
-// The actual execution is delegated to ExecutionEngine.
 // ------------------------------------------------------------
 bool TE_OpenScalp(CTrade &trade,
                   const string symbol,
@@ -129,16 +141,26 @@ bool TE_OpenScalp(CTrade &trade,
       return false;
    }
 
+
+   // ---------------------------------------------------------
+   // Actual ExecutionEngine result structure
+   //
+   // bool attempted;
+   // bool executed;
+   // ulong ticket;
+   // double volume;
+   // double riskMoney;
+   // string reason;
+   // ---------------------------------------------------------
    ExecutionResult execution;
-   execution.success = false;
+
    execution.attempted = false;
-   execution.message = "";
-   execution.ticket = 0;
-   execution.volume = 0.0;
-   execution.entry = 0.0;
-   execution.stopLoss = 0.0;
-   execution.takeProfit = 0.0;
-   execution.retcode = 0;
+   execution.executed  = false;
+   execution.ticket    = 0;
+   execution.volume    = 0.0;
+   execution.riskMoney = 0.0;
+   execution.reason   = "";
+
 
    bool ok = EX_OpenScalp(
       trade,
@@ -154,15 +176,16 @@ bool TE_OpenScalp(CTrade &trade,
       execution
    );
 
-   result.success    = execution.success;
-   result.attempted  = execution.attempted;
-   result.message    = execution.message;
-   result.ticket     = execution.ticket;
-   result.volume     = execution.volume;
-   result.entry      = execution.entry;
-   result.stopLoss   = execution.stopLoss;
-   result.takeProfit = execution.takeProfit;
-   result.retcode    = execution.retcode;
+
+   // ---------------------------------------------------------
+   // Translate ExecutionResult into TradeEngineResult
+   // ---------------------------------------------------------
+   result.success   = execution.executed;
+   result.attempted = execution.attempted;
+   result.ticket    = execution.ticket;
+   result.volume    = execution.volume;
+   result.riskMoney = execution.riskMoney;
+   result.message   = execution.reason;
 
    return ok;
 }
@@ -171,16 +194,13 @@ bool TE_OpenScalp(CTrade &trade,
 // ------------------------------------------------------------
 // Manage existing scalp positions
 //
-// IMPORTANT:
-// ExecutionEngine signature is:
+// EXACT ExecutionEngine signature:
 //
 // EX_ManageScalps(
 //    CTrade &trade,
-//    ulong magic,
-//    int maxHoldSeconds
+//    const ulong magic,
+//    const int maxHoldSeconds
 // );
-//
-// Do NOT pass a symbol here.
 // ------------------------------------------------------------
 void TE_ManageScalps(CTrade &trade,
                      const ulong magic,
@@ -195,7 +215,28 @@ void TE_ManageScalps(CTrade &trade,
 
 
 // ------------------------------------------------------------
-// Close one EA position
+// Check whether trading is permitted
+// ------------------------------------------------------------
+bool TE_IsTradingAllowed(const bool tradingEnabled)
+{
+   if(!tradingEnabled)
+      return false;
+
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED))
+      return false;
+
+   if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
+      return false;
+
+   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
+      return false;
+
+   return true;
+}
+
+
+// ------------------------------------------------------------
+// Close one position by ticket
 // ------------------------------------------------------------
 bool TE_ClosePosition(CTrade &trade,
                       const ulong ticket)
@@ -243,11 +284,11 @@ int TE_CloseAllPositions(CTrade &trade,
 
 
 // ------------------------------------------------------------
-// Close all positions for one symbol
+// Close all EA positions for one symbol
 // ------------------------------------------------------------
 int TE_CloseSymbolPositions(CTrade &trade,
-                            const string symbol,
-                            const ulong magic)
+                            const ulong magic,
+                            const string symbol)
 {
    int closed = 0;
 
@@ -282,10 +323,10 @@ int TE_CloseSymbolPositions(CTrade &trade,
 
 
 // ------------------------------------------------------------
-// Get current position volume for a symbol
+// Get total volume for one symbol
 // ------------------------------------------------------------
-double TE_GetSymbolVolume(const string symbol,
-                          const ulong magic)
+double TE_GetSymbolVolume(const ulong magic,
+                          const string symbol)
 {
    double volume = 0.0;
 
@@ -316,7 +357,7 @@ double TE_GetSymbolVolume(const string symbol,
 
 
 // ------------------------------------------------------------
-// Get floating profit for EA
+// Get floating profit for this EA
 // ------------------------------------------------------------
 double TE_GetFloatingProfit(const ulong magic)
 {
@@ -347,28 +388,7 @@ double TE_GetFloatingProfit(const ulong magic)
 
 
 // ------------------------------------------------------------
-// Check whether trading is allowed for the engine
-// ------------------------------------------------------------
-bool TE_IsTradingAllowed(const bool tradingEnabled)
-{
-   if(!tradingEnabled)
-      return false;
-
-   if(!TerminalInfoInteger(TERMINAL_CONNECTED))
-      return false;
-
-   if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
-      return false;
-
-   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
-      return false;
-
-   return true;
-}
-
-
-// ------------------------------------------------------------
-// Get account equity
+// Account equity
 // ------------------------------------------------------------
 double TE_GetEquity()
 {
@@ -377,7 +397,7 @@ double TE_GetEquity()
 
 
 // ------------------------------------------------------------
-// Get account balance
+// Account balance
 // ------------------------------------------------------------
 double TE_GetBalance()
 {
@@ -392,16 +412,17 @@ void TE_PrintStatus(const ulong magic)
 {
    double balance = TE_GetBalance();
    double equity  = TE_GetEquity();
-   double profit  = TE_GetFloatingProfit(magic);
-   int positions  = TE_CountOurPositions(magic);
+   double floating = TE_GetFloatingProfit(magic);
+   int positions = TE_CountOurPositions(magic);
 
    Print(
       "TradeEngine | ",
       "Balance=", DoubleToString(balance, 2),
       " | Equity=", DoubleToString(equity, 2),
-      " | Floating=", DoubleToString(profit, 2),
+      " | Floating=", DoubleToString(floating, 2),
       " | Positions=", IntegerToString(positions)
    );
 }
+
 
 #endif
