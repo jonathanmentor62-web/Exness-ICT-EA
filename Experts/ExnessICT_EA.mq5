@@ -664,3 +664,1006 @@ bool ValidateM15Confirmation(
 
    return(true);
 }
+//==================================================================
+// H4 PRIMARY STRUCTURE ANALYSIS
+//==================================================================
+//
+// This is the first stage of the NORMAL ICT pipeline:
+//
+// H4 structure
+//     |
+//     +--> direction
+//     +--> displacement
+//     +--> MSS/BOS
+//     +--> setup activation
+//
+// No trade is opened here.
+// This stage only establishes the higher-timeframe context.
+//==================================================================
+
+bool AnalyzeH4PrimaryStructure(
+   const string symbol,
+   ENUM_STRUCTURE_DIRECTION &direction,
+   datetime &signalTime
+)
+{
+   direction =
+      STRUCTURE_UNKNOWN;
+
+   signalTime =
+      0;
+
+
+   //---------------------------------------------------------------
+   // Basic history check
+   //---------------------------------------------------------------
+
+   if(
+      Bars(
+         symbol,
+         InpPrimaryTF
+      ) <
+      ICT_MIN_HISTORY_BARS
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Analyze the primary structure
+   //---------------------------------------------------------------
+
+   StructureSignal signal;
+
+
+   AnalyzeStructureSignal(
+      symbol,
+      InpPrimaryTF,
+      InpStructureLookback,
+      signal
+   );
+
+
+   if(!signal.valid)
+      return(false);
+
+
+   direction=
+      GetSignalDirection(
+         signal
+      );
+
+
+   if(
+      direction==
+      STRUCTURE_UNKNOWN
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // A structural signal must also have displacement.
+   //---------------------------------------------------------------
+
+   if(!signal.displacement)
+   {
+      return(false);
+   }
+
+
+   signalTime=
+      signal.signalTime;
+
+
+   //---------------------------------------------------------------
+   // Diagnostic information
+   //---------------------------------------------------------------
+
+   Print(
+      "[H4 STRUCTURE] ",
+      symbol,
+      " | Direction=",
+      StructureDirectionToString(
+         direction
+      ),
+      " | Event=",
+      StructureEventToString(
+         signal.event
+      ),
+      " | Displacement=",
+      (
+         signal.displacement
+         ?
+         "YES"
+         :
+         "NO"
+      )
+   );
+
+
+   return(true);
+}
+
+
+//==================================================================
+// H4 LIQUIDITY ANALYSIS
+//==================================================================
+//
+// Liquidity is treated as context/target information.
+// A liquidity level alone does NOT trigger an entry.
+//
+// The intended sequence remains:
+//
+// liquidity -> sweep/reaction -> displacement -> structure
+//==================================================================
+
+bool AnalyzeH4Liquidity(
+   const string symbol,
+   const ENUM_STRUCTURE_DIRECTION direction
+)
+{
+   if(
+      direction==
+      STRUCTURE_UNKNOWN
+   )
+   {
+      return(false);
+   }
+
+
+   LiquidityLevel buySide;
+
+   LiquidityLevel sellSide;
+
+
+   bool haveBuySide=
+      GetBuySideLiquidity(
+         symbol,
+         InpPrimaryTF,
+         InpStructureLookback,
+         buySide
+      );
+
+
+   bool haveSellSide=
+      GetSellSideLiquidity(
+         symbol,
+         InpPrimaryTF,
+         InpStructureLookback,
+         sellSide
+      );
+
+
+   if(
+      !haveBuySide &&
+      !haveSellSide
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Bullish structure normally seeks/uses sell-side liquidity
+   // before the bullish displacement.
+   //---------------------------------------------------------------
+
+   if(
+      direction==
+      STRUCTURE_BULLISH
+   )
+   {
+      if(haveSellSide)
+      {
+         Print(
+            "[H4 LIQUIDITY] ",
+            symbol,
+            " | Bullish context | Sell-side liquidity=",
+            DoubleToString(
+               sellSide.price,
+               (int)SymbolInfoInteger(
+                  symbol,
+                  SYMBOL_DIGITS
+               )
+            )
+         );
+
+
+         return(true);
+      }
+   }
+
+
+   //---------------------------------------------------------------
+   // Bearish structure normally seeks/uses buy-side liquidity
+   // before the bearish displacement.
+   //---------------------------------------------------------------
+
+   if(
+      direction==
+      STRUCTURE_BEARISH
+   )
+   {
+      if(haveBuySide)
+      {
+         Print(
+            "[H4 LIQUIDITY] ",
+            symbol,
+            " | Bearish context | Buy-side liquidity=",
+            DoubleToString(
+               buySide.price,
+               (int)SymbolInfoInteger(
+                  symbol,
+                  SYMBOL_DIGITS
+               )
+            )
+         );
+
+
+         return(true);
+      }
+   }
+
+
+   return(false);
+}
+
+
+//==================================================================
+// H4 FVG ANALYSIS
+//==================================================================
+
+bool AnalyzeH4FVG(
+   const string symbol,
+   const ENUM_STRUCTURE_DIRECTION direction,
+   FVGZone &zone
+)
+{
+   ResetFVG(
+      zone
+   );
+
+
+   if(
+      direction==
+      STRUCTURE_UNKNOWN
+   )
+   {
+      return(false);
+   }
+
+
+   bool found=
+      DetectFVG(
+         symbol,
+         InpPrimaryTF,
+         InpFVGScanLookback,
+         zone
+      );
+
+
+   if(!found)
+   {
+      Print(
+         "[H4 FVG] ",
+         symbol,
+         " | No FVG detected."
+      );
+
+
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Direction must agree with the H4 structure.
+   //---------------------------------------------------------------
+
+   if(
+      direction==
+      STRUCTURE_BULLISH &&
+      zone.direction!=
+      FVG_BULLISH
+   )
+   {
+      return(false);
+   }
+
+
+   if(
+      direction==
+      STRUCTURE_BEARISH &&
+      zone.direction!=
+      FVG_BEARISH
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Optional minimum FVG size filter
+   //---------------------------------------------------------------
+
+   double point=
+      SymbolInfoDouble(
+         symbol,
+         SYMBOL_POINT
+      );
+
+
+   if(point<=0.0)
+      return(false);
+
+
+   double sizePoints=
+      MathAbs(
+         zone.high-
+         zone.low
+      )/
+      point;
+
+
+   if(
+      sizePoints<
+      ICT_MIN_FVG_SIZE_PTS
+   )
+   {
+      return(false);
+   }
+
+
+   Print(
+      "[H4 FVG] ",
+      symbol,
+      " | Direction=",
+      FVGDirectionToString(
+         zone.direction
+      ),
+      " | Low=",
+      DoubleToString(
+         zone.low,
+         (int)SymbolInfoInteger(
+            symbol,
+            SYMBOL_DIGITS
+         )
+      ),
+      " | High=",
+      DoubleToString(
+         zone.high,
+         (int)SymbolInfoInteger(
+            symbol,
+            SYMBOL_DIGITS
+         )
+      ),
+      " | SizePts=",
+      DoubleToString(
+         sizePoints,
+         1
+      )
+   );
+
+
+   return(true);
+}
+
+
+//==================================================================
+// H4 ORDER BLOCK ANALYSIS
+//==================================================================
+
+bool AnalyzeH4OrderBlock(
+   const string symbol,
+   const ENUM_STRUCTURE_DIRECTION direction,
+   OrderBlock &block
+)
+{
+   ResetOrderBlock(
+      block
+   );
+
+
+   if(!ICT_ENABLE_ORDER_BLOCK)
+      return(true);
+
+
+   if(
+      direction==
+      STRUCTURE_UNKNOWN
+   )
+   {
+      return(false);
+   }
+
+
+   bool found=
+      false;
+
+
+   //---------------------------------------------------------------
+   // Bullish order block
+   //---------------------------------------------------------------
+
+   if(
+      direction==
+      STRUCTURE_BULLISH
+   )
+   {
+      found=
+         FindBullishOrderBlock(
+            symbol,
+            InpPrimaryTF,
+            InpOBScanLookback,
+            block
+         );
+   }
+
+
+   //---------------------------------------------------------------
+   // Bearish order block
+   //---------------------------------------------------------------
+
+   if(
+      direction==
+      STRUCTURE_BEARISH
+   )
+   {
+      found=
+         FindBearishOrderBlock(
+            symbol,
+            InpPrimaryTF,
+            InpOBScanLookback,
+            block
+         );
+   }
+
+
+   if(!found)
+   {
+      Print(
+         "[H4 OB] ",
+         symbol,
+         " | No matching order block found."
+      );
+
+
+      return(false);
+   }
+
+
+   Print(
+      "[H4 OB] ",
+      symbol,
+      " | Direction=",
+      OrderBlockDirectionToString(
+         block.direction
+      ),
+      " | Status=",
+      OrderBlockStatusToString(
+         block.status
+      ),
+      " | Low=",
+      DoubleToString(
+         block.low,
+         (int)SymbolInfoInteger(
+            symbol,
+            SYMBOL_DIGITS
+         )
+      ),
+      " | High=",
+      DoubleToString(
+         block.high,
+         (int)SymbolInfoInteger(
+            symbol,
+            SYMBOL_DIGITS
+         )
+      )
+   );
+
+
+   return(true);
+}
+
+
+//==================================================================
+// CREATE H4 SETUP
+//==================================================================
+//
+// H4 is the context layer.
+// It does NOT directly execute a trade.
+//
+// The setup remains active only long enough for M15/M5 confirmation.
+//==================================================================
+
+bool BuildH4Setup(
+   const string symbol
+)
+{
+   ENUM_STRUCTURE_DIRECTION direction;
+
+   datetime signalTime;
+
+
+   if(
+      !AnalyzeH4PrimaryStructure(
+         symbol,
+         direction,
+         signalTime
+      )
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Liquidity context
+   //---------------------------------------------------------------
+
+   AnalyzeH4Liquidity(
+      symbol,
+      direction
+   );
+
+
+   //---------------------------------------------------------------
+   // FVG context
+   //---------------------------------------------------------------
+
+   FVGZone fvg;
+
+   bool haveFVG=
+      AnalyzeH4FVG(
+         symbol,
+         direction,
+         fvg
+      );
+
+
+   //---------------------------------------------------------------
+   // Order block context
+   //---------------------------------------------------------------
+
+   OrderBlock block;
+
+   bool haveOB=
+      AnalyzeH4OrderBlock(
+         symbol,
+         direction,
+         block
+      );
+
+
+   //---------------------------------------------------------------
+   // ICT setup requires FVG when configured.
+   //---------------------------------------------------------------
+
+   if(
+      ICT_REQUIRE_FVG &&
+      !haveFVG
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Activate setup
+   //---------------------------------------------------------------
+
+   g_h4SetupActive=
+      true;
+
+   g_h4SetupDirection=
+      direction;
+
+   g_h4SetupTime=
+      signalTime;
+
+   g_h4SetupShift=
+      1;
+
+
+   Print(
+      "[H4 SETUP] ACTIVE | ",
+      symbol,
+      " | Direction=",
+      StructureDirectionToString(
+         direction
+      ),
+      " | FVG=",
+      (
+         haveFVG
+         ?
+         "YES"
+         :
+         "NO"
+      ),
+      " | OB=",
+      (
+         haveOB
+         ?
+         "YES"
+         :
+         "NO"
+      )
+   );
+
+
+   return(true);
+}
+
+
+//==================================================================
+// M15 CONFIRMATION ANALYSIS
+//==================================================================
+//
+// M15 is the primary confirmation timeframe for H4.
+//
+// Required confirmation:
+//
+// H4 direction
+//      |
+//      v
+// M15 displacement
+//      |
+//      v
+// M15 MSS/BOS
+//      |
+//      v
+// M15 FVG
+//      |
+//      v
+// M5 execution confirmation
+//==================================================================
+
+bool AnalyzeM15Confirmation(
+   const string symbol,
+   const ENUM_STRUCTURE_DIRECTION expectedDirection,
+   M15Confirmation &confirmation
+)
+{
+   ResetM15Confirmation(
+      confirmation
+   );
+
+
+   if(
+      expectedDirection==
+      STRUCTURE_UNKNOWN
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // History
+   //---------------------------------------------------------------
+
+   if(
+      Bars(
+         symbol,
+         InpConfirmTF
+      )<
+      ICT_MIN_HISTORY_BARS
+   )
+   {
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Structure
+   //---------------------------------------------------------------
+
+   StructureSignal signal;
+
+
+   AnalyzeStructureSignal(
+      symbol,
+      InpConfirmTF,
+      InpStructureLookback,
+      signal
+   );
+
+
+   if(!signal.valid)
+   {
+      confirmation.state=
+         CONFIRMATION_WAITING;
+
+      confirmation.reason=
+         "No valid M15 structure signal.";
+
+      return(false);
+   }
+
+
+   ENUM_STRUCTURE_DIRECTION direction=
+      GetSignalDirection(
+         signal
+      );
+
+
+   confirmation.direction=
+      direction;
+
+   confirmation.displacement=
+      signal.displacement;
+
+   confirmation.mss=
+      signal.mss;
+
+   confirmation.bos=
+      signal.bos;
+
+   confirmation.brokenLevel=
+      signal.brokenLevel;
+
+   confirmation.confirmationTime=
+      signal.signalTime;
+
+   confirmation.confirmationShift=
+      signal.signalShift;
+
+
+   //---------------------------------------------------------------
+   // Direction agreement
+   //---------------------------------------------------------------
+
+   if(
+      direction!=
+      expectedDirection
+   )
+   {
+      confirmation.state=
+         CONFIRMATION_INVALID;
+
+      confirmation.reason=
+         "M15 direction disagrees with H4.";
+
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Displacement
+   //---------------------------------------------------------------
+
+   if(!signal.displacement)
+   {
+      confirmation.state=
+         CONFIRMATION_WAITING;
+
+      confirmation.reason=
+         "M15 displacement not confirmed.";
+
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // MSS/BOS
+   //---------------------------------------------------------------
+
+   if(
+      !signal.mss &&
+      !signal.bos
+   )
+   {
+      confirmation.state=
+         CONFIRMATION_WAITING;
+
+      confirmation.reason=
+         "M15 MSS/BOS not confirmed.";
+
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // FVG
+   //---------------------------------------------------------------
+
+   FVGZone fvg;
+
+
+   bool haveFVG=
+      AnalyzeH4FVG(
+         symbol,
+         expectedDirection,
+         fvg
+      );
+
+
+   confirmation.fvgPresent=
+      haveFVG;
+
+
+   if(
+      ICT_REQUIRE_FVG &&
+      !haveFVG
+   )
+   {
+      confirmation.state=
+         CONFIRMATION_WAITING;
+
+      confirmation.reason=
+         "Required FVG not present.";
+
+      return(false);
+   }
+
+
+   //---------------------------------------------------------------
+   // Order block
+   //---------------------------------------------------------------
+
+   if(ICT_ENABLE_ORDER_BLOCK)
+   {
+      OrderBlock block;
+
+
+      bool haveOB=
+         AnalyzeH4OrderBlock(
+            symbol,
+            expectedDirection,
+            block
+         );
+
+
+      confirmation.orderBlockPresent=
+         haveOB;
+   }
+   else
+   {
+      confirmation.orderBlockPresent=
+         false;
+   }
+
+
+   //---------------------------------------------------------------
+   // Final validation
+   //---------------------------------------------------------------
+
+   confirmation.valid=
+      true;
+
+   confirmation.confirmed=
+      true;
+
+   confirmation.state=
+      CONFIRMATION_CONFIRMED;
+
+   confirmation.reason=
+      "M15 ICT confirmation valid.";
+
+
+   Print(
+      "[M15 CONFIRMATION] ",
+      symbol,
+      " | Direction=",
+      StructureDirectionToString(
+         confirmation.direction
+      ),
+      " | MSS=",
+      (
+         confirmation.mss
+         ?
+         "YES"
+         :
+         "NO"
+      ),
+      " | BOS=",
+      (
+         confirmation.bos
+         ?
+         "YES"
+         :
+         "NO"
+      ),
+      " | Displacement=",
+      (
+         confirmation.displacement
+         ?
+         "YES"
+         :
+         "NO"
+      ),
+      " | FVG=",
+      (
+         confirmation.fvgPresent
+         ?
+         "YES"
+         :
+         "NO"
+      )
+   );
+
+
+   return(
+      ValidateM15Confirmation(
+         confirmation,
+         expectedDirection
+      )
+   );
+}
+
+
+//==================================================================
+// M5 EXECUTION CONFIRMATION
+//==================================================================
+//
+// M5 is the final confirmation before a NORMAL-mode entry.
+//
+// The M5 module is deliberately kept separate so the execution
+// logic can later be tightened without changing the H4/M15 engine.
+//==================================================================
+
+bool AnalyzeM5ExecutionConfirmation(
+   const string symbol,
+   const ENUM_STRUCTURE_DIRECTION expectedDirection
+)
+{
+   ResetM5Confirmation(
+      g_m5Confirmation
+   );
+
+
+   if(
+      expectedDirection==
+      STRUCTURE_UNKNOWN
+   )
+   {
+      return(false);
+   }
+
+
+   bool confirmed=
+      AnalyzeM5Confirmation(
+         symbol,
+         expectedDirection,
+         g_m5Confirmation
+      );
+
+
+   if(!confirmed)
+   {
+      return(false);
+   }
+
+
+   if(
+      !g_m5Confirmation.valid
+   )
+   {
+      return(false);
+   }
+
+
+   if(
+      g_m5Confirmation.direction!=
+      expectedDirection
+   )
+   {
+      return(false);
+   }
+
+
+   Print(
+      "[M5 CONFIRMATION] ",
+      symbol,
+      " | Direction=",
+      StructureDirectionToString(
+         g_m5Confirmation.direction
+      ),
+      " | CONFIRMED"
+   );
+
+
+   return(true);
+}
