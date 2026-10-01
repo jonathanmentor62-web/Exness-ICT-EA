@@ -1,565 +1,406 @@
-//+------------------------------------------------------------------+
-//| TradeEngine.mqh                                                  |
-//| Central trading-mode coordinator                                 |
-//+------------------------------------------------------------------+
 #ifndef __EXNESS_ICT_TRADE_ENGINE_MQH__
 #define __EXNESS_ICT_TRADE_ENGINE_MQH__
 
 #include <Trade/Trade.mqh>
-
 #include "Config.mqh"
+#include "RiskEngine.mqh"
 #include "M1Scalper.mqh"
 #include "ExecutionEngine.mqh"
 
-//+------------------------------------------------------------------+
-//| Trading modes                                                    |
-//+------------------------------------------------------------------+
+// ============================================================
+// TRADE ENGINE
+// Adapter layer for the Exness ICT EA.
+//
+// ExecutionEngine.mqh contains the actual order execution logic.
+// This file provides a clean TradeEngine interface around it.
+//
+// IMPORTANT:
+// - No martingale
+// - No forced lot doubling
+// - RiskEngine remains the authority for lot sizing
+// - Trading is blocked when tradingEnabled == false
+// - ExecutionEngine performs the final broker/risk checks
+// ============================================================
 
-enum TRADE_ENGINE_MODE
+
+// ------------------------------------------------------------
+// TradeEngine result
+// ------------------------------------------------------------
+struct TradeEngineResult
 {
-   TE_MODE_NORMAL=0,
-   TE_MODE_SCALPING=1,
-   TE_MODE_AUTO=2
+   bool     success;
+   bool     attempted;
+   string   message;
+   ulong    ticket;
+   double   volume;
+   double   entry;
+   double   stopLoss;
+   double   takeProfit;
+   int      retcode;
+
+   void Reset()
+   {
+      success    = false;
+      attempted  = false;
+      message    = "";
+      ticket     = 0;
+      volume     = 0.0;
+      entry      = 0.0;
+      stopLoss   = 0.0;
+      takeProfit = 0.0;
+      retcode    = 0;
+   }
 };
 
-//+------------------------------------------------------------------+
-//| State                                                             |
-//+------------------------------------------------------------------+
 
-struct TradeEngineState
+// ------------------------------------------------------------
+// Initialize result
+// ------------------------------------------------------------
+void TE_ResetResult(TradeEngineResult &result)
 {
-   bool initialized;
-
-   ulong magic;
-
-   TRADE_ENGINE_MODE mode;
-
-   bool normalEnabled;
-   bool scalpingEnabled;
-
-   datetime lastScalpEntryTime;
-
-   int totalScalpEntries;
-};
-
-//+------------------------------------------------------------------+
-//| Initialize                                                       |
-//+------------------------------------------------------------------+
-
-void TE_Init(
-   TradeEngineState &state,
-   const ulong magic,
-   const bool normalEnabled,
-   const bool scalpingEnabled,
-   const bool autoMode)
-{
-   state.initialized=true;
-
-   state.magic=magic;
-
-   if(autoMode)
-   {
-      state.mode=TE_MODE_AUTO;
-
-      state.normalEnabled=true;
-      state.scalpingEnabled=true;
-   }
-   else
-   {
-      if(scalpingEnabled)
-      {
-         state.mode=TE_MODE_SCALPING;
-
-         state.normalEnabled=false;
-         state.scalpingEnabled=true;
-      }
-      else
-      {
-         state.mode=TE_MODE_NORMAL;
-
-         state.normalEnabled=normalEnabled;
-         state.scalpingEnabled=false;
-      }
-   }
-
-   state.lastScalpEntryTime=0;
-   state.totalScalpEntries=0;
+   result.Reset();
 }
 
-//+------------------------------------------------------------------+
-//| Can trade                                                        |
-//+------------------------------------------------------------------+
 
-bool TE_CanTrade(
-   const TradeEngineState &state,
-   const bool tradingEnabled)
+// ------------------------------------------------------------
+// Count EA positions
+// ------------------------------------------------------------
+int TE_CountOurPositions(const ulong magic)
 {
-   if(!state.initialized)
-      return(false);
+   return EX_CountOurPositions(magic);
+}
+
+
+// ------------------------------------------------------------
+// Count EA positions on one symbol
+// ------------------------------------------------------------
+int TE_CountSymbolPositions(const string symbol,
+                            const ulong magic)
+{
+   return EX_CountSymbolPositions(symbol, magic);
+}
+
+
+// ------------------------------------------------------------
+// Check whether a symbol already has an opposite position
+// ------------------------------------------------------------
+bool TE_HasOppositePosition(const string symbol,
+                            const ENUM_ORDER_TYPE orderType,
+                            const ulong magic)
+{
+   return EX_HasOppositePosition(symbol, orderType, magic);
+}
+
+
+// ------------------------------------------------------------
+// Open M1 scalp
+//
+// The actual execution is delegated to ExecutionEngine.
+// ------------------------------------------------------------
+bool TE_OpenScalp(CTrade &trade,
+                  const string symbol,
+                  const M1ScalpSignal &signal,
+                  const double riskPercent,
+                  const double maxTotalRiskPercent,
+                  const ulong magic,
+                  const int maxPositions,
+                  const int maxSymbolPositions,
+                  const int maxSpreadPts,
+                  const bool tradingEnabled,
+                  TradeEngineResult &result)
+{
+   result.Reset();
 
    if(!tradingEnabled)
-      return(false);
-
-   return(true);
-}
-
-//+------------------------------------------------------------------+
-//| Count EA positions                                               |
-//+------------------------------------------------------------------+
-
-int TE_CountPositions(
-   const ulong magic)
-{
-   int count=0;
-
-   int total=
-      PositionsTotal();
-
-   for(int i=0;i<total;i++)
    {
-      ulong ticket=
-         PositionGetTicket(i);
-
-      if(ticket==0)
-         continue;
-
-      if(!PositionSelectByTicket(ticket))
-         continue;
-
-      long positionMagic=
-         PositionGetInteger(
-            POSITION_MAGIC
-         );
-
-      if((ulong)positionMagic!=magic)
-         continue;
-
-      count++;
+      result.message = "Trading disabled";
+      return false;
    }
 
-   return(count);
-}
-
-//+------------------------------------------------------------------+
-//| Count positions on symbol                                        |
-//+------------------------------------------------------------------+
-
-int TE_CountSymbolPositions(
-   const string symbol,
-   const ulong magic)
-{
-   int count=0;
-
-   int total=
-      PositionsTotal();
-
-   for(int i=0;i<total;i++)
+   if(symbol == "")
    {
-      ulong ticket=
-         PositionGetTicket(i);
-
-      if(ticket==0)
-         continue;
-
-      if(!PositionSelectByTicket(ticket))
-         continue;
-
-      if(PositionGetString(
-         POSITION_SYMBOL
-      )!=symbol)
-         continue;
-
-      long positionMagic=
-         PositionGetInteger(
-            POSITION_MAGIC
-         );
-
-      if((ulong)positionMagic!=magic)
-         continue;
-
-      count++;
-   }
-
-   return(count);
-}
-
-//+------------------------------------------------------------------+
-//| Check same-direction position                                   |
-//+------------------------------------------------------------------+
-
-bool TE_HasSameDirection(
-   const string symbol,
-   const ENUM_ORDER_TYPE orderType,
-   const ulong magic)
-{
-   ENUM_POSITION_TYPE wanted;
-
-   if(orderType==ORDER_TYPE_BUY)
-      wanted=POSITION_TYPE_BUY;
-   else if(orderType==ORDER_TYPE_SELL)
-      wanted=POSITION_TYPE_SELL;
-   else
-      return(false);
-
-   int total=
-      PositionsTotal();
-
-   for(int i=0;i<total;i++)
-   {
-      ulong ticket=
-         PositionGetTicket(i);
-
-      if(ticket==0)
-         continue;
-
-      if(!PositionSelectByTicket(ticket))
-         continue;
-
-      if(PositionGetString(
-         POSITION_SYMBOL
-      )!=symbol)
-         continue;
-
-      if((ulong)PositionGetInteger(
-         POSITION_MAGIC
-      )!=magic)
-         continue;
-
-      if((ENUM_POSITION_TYPE)
-         PositionGetInteger(
-            POSITION_TYPE
-         )==wanted)
-      {
-         return(true);
-      }
-   }
-
-   return(false);
-}
-
-//+------------------------------------------------------------------+
-//| Check opposite position                                          |
-//+------------------------------------------------------------------+
-
-bool TE_HasOppositeDirection(
-   const string symbol,
-   const ENUM_ORDER_TYPE orderType,
-   const ulong magic)
-{
-   ENUM_POSITION_TYPE opposite;
-
-   if(orderType==ORDER_TYPE_BUY)
-      opposite=POSITION_TYPE_SELL;
-   else if(orderType==ORDER_TYPE_SELL)
-      opposite=POSITION_TYPE_BUY;
-   else
-      return(false);
-
-   int total=
-      PositionsTotal();
-
-   for(int i=0;i<total;i++)
-   {
-      ulong ticket=
-         PositionGetTicket(i);
-
-      if(ticket==0)
-         continue;
-
-      if(!PositionSelectByTicket(ticket))
-         continue;
-
-      if(PositionGetString(
-         POSITION_SYMBOL
-      )!=symbol)
-         continue;
-
-      if((ulong)PositionGetInteger(
-         POSITION_MAGIC
-      )!=magic)
-         continue;
-
-      if((ENUM_POSITION_TYPE)
-         PositionGetInteger(
-            POSITION_TYPE
-         )==opposite)
-      {
-         return(true);
-      }
-   }
-
-   return(false);
-}
-
-//+------------------------------------------------------------------+
-//| Check scalp cooldown                                             |
-//+------------------------------------------------------------------+
-
-bool TE_CooldownComplete(
-   const TradeEngineState &state,
-   const int cooldownSeconds)
-{
-   if(state.lastScalpEntryTime<=0)
-      return(true);
-
-   long elapsed=
-      (long)(TimeCurrent()-
-             state.lastScalpEntryTime);
-
-   return(
-      elapsed>=cooldownSeconds
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Process one scalp signal                                         |
-//+------------------------------------------------------------------+
-
-bool TE_ProcessScalp(
-   TradeEngineState &state,
-   CTrade &trade,
-   const string symbol,
-   const double riskPercent,
-   const double maxTotalRiskPercent,
-   const ulong magic,
-   const double minScore,
-   const int maxHoldSeconds,
-   const int cooldownSeconds,
-   const int maxPositions,
-   const int maxSymbolPositions,
-   const int maxSpreadPts,
-   const bool tradingEnabled)
-{
-   if(!state.initialized)
-      return(false);
-
-   if(!state.scalpingEnabled)
-      return(false);
-
-   if(!TE_CanTrade(
-      state,
-      tradingEnabled))
-      return(false);
-
-   if(!TE_CooldownComplete(
-      state,
-      cooldownSeconds))
-      return(false);
-
-   //-----------------------------------------------------------------
-   // Global position limit
-   //-----------------------------------------------------------------
-
-   if(TE_CountPositions(magic)>=
-      maxPositions)
-   {
-      return(false);
-   }
-
-   //-----------------------------------------------------------------
-   // Symbol position limit
-   //-----------------------------------------------------------------
-
-   if(TE_CountSymbolPositions(
-      symbol,
-      magic)>=
-      maxSymbolPositions)
-   {
-      return(false);
-   }
-
-   //-----------------------------------------------------------------
-   // Spread
-   //-----------------------------------------------------------------
-
-   long spread=0;
-
-   if(!SymbolInfoInteger(
-      symbol,
-      SYMBOL_SPREAD,
-      spread))
-      return(false);
-
-   if(spread>maxSpreadPts)
-      return(false);
-
-   //-----------------------------------------------------------------
-   // Build M1 signal
-   //-----------------------------------------------------------------
-
-   M1ScalpSignal signal;
-
-   if(!M1_BuildSignal(
-      symbol,
-      signal))
-   {
-      return(false);
+      result.message = "Empty symbol";
+      return false;
    }
 
    if(!signal.valid)
-      return(false);
-
-   if(signal.score<minScore)
-      return(false);
-
-   //-----------------------------------------------------------------
-   // Do not create opposite exposure.
-   //-----------------------------------------------------------------
-
-   if(TE_HasOppositeDirection(
-      symbol,
-      signal.orderType,
-      magic))
    {
-      return(false);
+      result.message = "Invalid scalp signal";
+      return false;
    }
 
-   //-----------------------------------------------------------------
-   // Stacking protection
-   //-----------------------------------------------------------------
+   ExecutionResult execution;
+   execution.success = false;
+   execution.attempted = false;
+   execution.message = "";
+   execution.ticket = 0;
+   execution.volume = 0.0;
+   execution.entry = 0.0;
+   execution.stopLoss = 0.0;
+   execution.takeProfit = 0.0;
+   execution.retcode = 0;
 
-   if(!ICT_SCALP_ALLOW_STACKING &&
-      TE_HasSameDirection(
-         symbol,
-         signal.orderType,
-         magic))
-   {
-      return(false);
-   }
-
-   //-----------------------------------------------------------------
-   // Execute
-   //-----------------------------------------------------------------
-
-   ExecutionResult result;
-
-   bool opened=
-      EX_OpenScalp(
-         trade,
-         symbol,
-         signal,
-         riskPercent,
-         maxTotalRiskPercent,
-         magic,
-         maxPositions,
-         maxSymbolPositions,
-         maxSpreadPts,
-         tradingEnabled,
-         result
-      );
-
-   if(!opened)
-      return(false);
-
-   state.lastScalpEntryTime=
-      TimeCurrent();
-
-   state.totalScalpEntries++;
-
-   Print(
-      "[SCALPER] Entry opened: ",
-      symbol,
-      " | Score=",
-      DoubleToString(
-         signal.score,
-         1
-      ),
-      " | Reason=",
-      signal.reason
-   );
-
-   return(true);
-}
-
-//+------------------------------------------------------------------+
-//| Manage scalper positions                                         |
-//+------------------------------------------------------------------+
-
-void TE_ManageScalps(
-   TradeEngineState &state,
-   CTrade &trade,
-   const string symbol,
-   const int maxHoldSeconds,
-   const int cooldownSeconds,
-   const ulong magic)
-{
-   if(!state.initialized)
-      return;
-
-   if(!state.scalpingEnabled)
-      return;
-
-   //-----------------------------------------------------------------
-   // ExecutionEngine handles the actual position-management logic.
-   //-----------------------------------------------------------------
-
-   EX_ManageScalps(
+   bool ok = EX_OpenScalp(
       trade,
       symbol,
+      signal,
+      riskPercent,
+      maxTotalRiskPercent,
+      magic,
+      maxPositions,
+      maxSymbolPositions,
+      maxSpreadPts,
+      tradingEnabled,
+      execution
+   );
+
+   result.success    = execution.success;
+   result.attempted  = execution.attempted;
+   result.message    = execution.message;
+   result.ticket     = execution.ticket;
+   result.volume     = execution.volume;
+   result.entry      = execution.entry;
+   result.stopLoss   = execution.stopLoss;
+   result.takeProfit = execution.takeProfit;
+   result.retcode    = execution.retcode;
+
+   return ok;
+}
+
+
+// ------------------------------------------------------------
+// Manage existing scalp positions
+//
+// IMPORTANT:
+// ExecutionEngine signature is:
+//
+// EX_ManageScalps(
+//    CTrade &trade,
+//    ulong magic,
+//    int maxHoldSeconds
+// );
+//
+// Do NOT pass a symbol here.
+// ------------------------------------------------------------
+void TE_ManageScalps(CTrade &trade,
+                     const ulong magic,
+                     const int maxHoldSeconds)
+{
+   EX_ManageScalps(
+      trade,
       magic,
       maxHoldSeconds
    );
 }
 
-//+------------------------------------------------------------------+
-//| Process normal mode placeholder                                  |
-//+------------------------------------------------------------------+
 
-bool TE_ProcessNormal(
-   TradeEngineState &state,
-   const bool tradingEnabled)
+// ------------------------------------------------------------
+// Close one EA position
+// ------------------------------------------------------------
+bool TE_ClosePosition(CTrade &trade,
+                      const ulong ticket)
 {
-   if(!state.initialized)
-      return(false);
+   if(ticket == 0)
+      return false;
 
-   if(!state.normalEnabled)
-      return(false);
+   if(!PositionSelectByTicket(ticket))
+      return false;
 
-   if(!tradingEnabled)
-      return(false);
-
-   // Normal ICT analysis/execution is kept in the main EA's
-   // structural pipeline and supporting modules.
-
-   return(true);
+   return trade.PositionClose(ticket);
 }
 
-//+------------------------------------------------------------------+
-//| Reset runtime state                                              |
-//+------------------------------------------------------------------+
 
-void TE_Reset(
-   TradeEngineState &state)
+// ------------------------------------------------------------
+// Close all positions belonging to this EA
+// ------------------------------------------------------------
+int TE_CloseAllPositions(CTrade &trade,
+                         const ulong magic)
 {
-   state.lastScalpEntryTime=0;
-   state.totalScalpEntries=0;
-}
+   int closed = 0;
 
-//+------------------------------------------------------------------+
-//| Status                                                            |
-//+------------------------------------------------------------------+
-
-void TE_PrintStatus(
-   const TradeEngineState &state)
-{
-   if(!state.initialized)
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      Print(
-         "[TRADE ENGINE] Not initialized."
-      );
+      ulong ticket = PositionGetTicket(i);
 
-      return;
+      if(ticket == 0)
+         continue;
+
+      if(!PositionSelectByTicket(ticket))
+         continue;
+
+      ulong positionMagic =
+         (ulong)PositionGetInteger(POSITION_MAGIC);
+
+      if(positionMagic != magic)
+         continue;
+
+      if(trade.PositionClose(ticket))
+         closed++;
    }
 
+   return closed;
+}
+
+
+// ------------------------------------------------------------
+// Close all positions for one symbol
+// ------------------------------------------------------------
+int TE_CloseSymbolPositions(CTrade &trade,
+                            const string symbol,
+                            const ulong magic)
+{
+   int closed = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+
+      if(ticket == 0)
+         continue;
+
+      if(!PositionSelectByTicket(ticket))
+         continue;
+
+      string positionSymbol =
+         PositionGetString(POSITION_SYMBOL);
+
+      if(positionSymbol != symbol)
+         continue;
+
+      ulong positionMagic =
+         (ulong)PositionGetInteger(POSITION_MAGIC);
+
+      if(positionMagic != magic)
+         continue;
+
+      if(trade.PositionClose(ticket))
+         closed++;
+   }
+
+   return closed;
+}
+
+
+// ------------------------------------------------------------
+// Get current position volume for a symbol
+// ------------------------------------------------------------
+double TE_GetSymbolVolume(const string symbol,
+                          const ulong magic)
+{
+   double volume = 0.0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+
+      if(ticket == 0)
+         continue;
+
+      if(!PositionSelectByTicket(ticket))
+         continue;
+
+      if(PositionGetString(POSITION_SYMBOL) != symbol)
+         continue;
+
+      ulong positionMagic =
+         (ulong)PositionGetInteger(POSITION_MAGIC);
+
+      if(positionMagic != magic)
+         continue;
+
+      volume += PositionGetDouble(POSITION_VOLUME);
+   }
+
+   return volume;
+}
+
+
+// ------------------------------------------------------------
+// Get floating profit for EA
+// ------------------------------------------------------------
+double TE_GetFloatingProfit(const ulong magic)
+{
+   double profit = 0.0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+
+      if(ticket == 0)
+         continue;
+
+      if(!PositionSelectByTicket(ticket))
+         continue;
+
+      ulong positionMagic =
+         (ulong)PositionGetInteger(POSITION_MAGIC);
+
+      if(positionMagic != magic)
+         continue;
+
+      profit += PositionGetDouble(POSITION_PROFIT);
+      profit += PositionGetDouble(POSITION_SWAP);
+   }
+
+   return profit;
+}
+
+
+// ------------------------------------------------------------
+// Check whether trading is allowed for the engine
+// ------------------------------------------------------------
+bool TE_IsTradingAllowed(const bool tradingEnabled)
+{
+   if(!tradingEnabled)
+      return false;
+
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED))
+      return false;
+
+   if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
+      return false;
+
+   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
+      return false;
+
+   return true;
+}
+
+
+// ------------------------------------------------------------
+// Get account equity
+// ------------------------------------------------------------
+double TE_GetEquity()
+{
+   return AccountInfoDouble(ACCOUNT_EQUITY);
+}
+
+
+// ------------------------------------------------------------
+// Get account balance
+// ------------------------------------------------------------
+double TE_GetBalance()
+{
+   return AccountInfoDouble(ACCOUNT_BALANCE);
+}
+
+
+// ------------------------------------------------------------
+// Print TradeEngine status
+// ------------------------------------------------------------
+void TE_PrintStatus(const ulong magic)
+{
+   double balance = TE_GetBalance();
+   double equity  = TE_GetEquity();
+   double profit  = TE_GetFloatingProfit(magic);
+   int positions  = TE_CountOurPositions(magic);
+
    Print(
-      "[TRADE ENGINE] Mode=",
-      EnumToString(state.mode),
-      " | Normal=",
-      state.normalEnabled,
-      " | Scalping=",
-      state.scalpingEnabled,
-      " | ScalpEntries=",
-      state.totalScalpEntries
+      "TradeEngine | ",
+      "Balance=", DoubleToString(balance, 2),
+      " | Equity=", DoubleToString(equity, 2),
+      " | Floating=", DoubleToString(profit, 2),
+      " | Positions=", IntegerToString(positions)
    );
 }
 
