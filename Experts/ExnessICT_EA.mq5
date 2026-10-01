@@ -2587,3 +2587,775 @@ bool InitializeTradeEngine()
 
    return(true);
 }
+//==================================================================
+// NEW BAR DETECTION
+//==================================================================
+//
+// The EA does not need to wait for a new bar for scalper position
+// management. Existing positions are managed on every tick.
+//
+// New-bar detection is used for the structural H4/M15/M5 pipeline
+// so the same structural signal is not repeatedly processed on
+// every tick.
+//==================================================================
+
+bool IsNewBar(
+   const string symbol,
+   const ENUM_TIMEFRAMES timeframe,
+   datetime &lastBarTime
+)
+{
+   datetime currentBarTime=
+      iTime(
+         symbol,
+         timeframe,
+         0
+      );
+
+
+   if(currentBarTime<=0)
+      return(false);
+
+
+   if(
+      lastBarTime==
+      0
+   )
+   {
+      lastBarTime=
+         currentBarTime;
+
+      return(true);
+   }
+
+
+   if(
+      currentBarTime!=
+      lastBarTime
+   )
+   {
+      lastBarTime=
+         currentBarTime;
+
+      return(true);
+   }
+
+
+   return(false);
+}
+
+
+//==================================================================
+// STRUCTURAL SCAN TIMER
+//==================================================================
+//
+// The normal ICT pipeline is evaluated when a new H4 candle appears.
+// M15/M5 confirmation is still checked when their respective bars
+// change, while the scalper continues reacting on every tick.
+//==================================================================
+
+void ProcessNormalOnNewStructureBar(
+   const string symbol
+)
+{
+   if(
+      InpTradingMode==
+      EA_MODE_SCALPER
+   )
+   {
+      return;
+   }
+
+
+   //---------------------------------------------------------------
+   // H4 new bar
+   //---------------------------------------------------------------
+
+   bool newH4=
+      IsNewBar(
+         symbol,
+         InpPrimaryTF,
+         g_lastPrimaryBar
+      );
+
+
+   //---------------------------------------------------------------
+   // M15 new bar
+   //---------------------------------------------------------------
+
+   bool newM15=
+      IsNewBar(
+         symbol,
+         InpConfirmTF,
+         g_lastConfirmBar
+      );
+
+
+   //---------------------------------------------------------------
+   // M5 new bar
+   //---------------------------------------------------------------
+
+   bool newM5=
+      IsNewBar(
+         symbol,
+         InpEntryTF,
+         g_lastEntryBar
+      );
+
+
+   //---------------------------------------------------------------
+   // H4 creates/rebuilds the primary setup.
+   //---------------------------------------------------------------
+
+   if(newH4)
+   {
+      g_h4SetupActive=
+         false;
+
+      g_h4SetupDirection=
+         STRUCTURE_UNKNOWN;
+
+      g_h4SetupTime=
+         0;
+
+      g_h4SetupShift=
+         -1;
+
+      ResetM15Confirmation(
+         g_m15Confirmation
+      );
+
+      ResetM5Confirmation(
+         g_m5Confirmation
+      );
+
+
+      BuildH4Setup(
+         symbol
+      );
+   }
+
+
+   //---------------------------------------------------------------
+   // If no H4 setup exists, there is nothing to confirm.
+   //---------------------------------------------------------------
+
+   if(!g_h4SetupActive)
+   {
+      return;
+   }
+
+
+   //---------------------------------------------------------------
+   // M15 confirmation.
+   //
+   // It is allowed to refresh on each new M15 candle.
+   //---------------------------------------------------------------
+
+   if(newM15)
+   {
+      AnalyzeM15Confirmation(
+         symbol,
+         g_h4SetupDirection,
+         g_m15Confirmation
+      );
+   }
+
+
+   //---------------------------------------------------------------
+   // M5 confirmation.
+   //
+   // Only check M5 when M15 has already confirmed.
+   //---------------------------------------------------------------
+
+   if(
+      g_m15Confirmation.confirmed &&
+      newM5
+   )
+   {
+      AnalyzeM5ExecutionConfirmation(
+         symbol,
+         g_h4SetupDirection
+      );
+   }
+
+
+   //---------------------------------------------------------------
+   // Complete structural confirmation.
+   //---------------------------------------------------------------
+
+   if(
+      g_m15Confirmation.confirmed &&
+      g_m5Confirmation.valid
+   )
+   {
+      Print(
+         "[ICT EXECUTION] Structural signal ready | ",
+         symbol,
+         " | Direction=",
+         StructureDirectionToString(
+            g_h4SetupDirection
+         )
+      );
+
+
+      //------------------------------------------------------------
+      // IMPORTANT:
+      //
+      // The current build completes the structural confirmation
+      // pipeline but does not bypass the dedicated execution/risk
+      // engine with a raw market order.
+      //
+      // This prevents the H4/M15/M5 analysis layer from opening
+      // uncontrolled positions.
+      //------------------------------------------------------------
+   }
+}
+
+
+//==================================================================
+// MANAGE ALL OPEN SCALPER POSITIONS
+//==================================================================
+//
+// Position management must continue even when:
+//
+// - new entries are disabled
+// - daily loss protection is active
+// - a new signal is not present
+//
+// The execution module handles the actual exit conditions.
+//==================================================================
+
+void ManageAllScalperPositions()
+{
+   if(
+      InpTradingMode==
+      EA_MODE_NORMAL
+   )
+   {
+      return;
+   }
+
+
+   string symbols[];
+
+
+   int count=
+      BuildSymbolList(
+         symbols
+      );
+
+
+   if(count<=0)
+      return;
+
+
+   for(
+      int i=0;
+      i<count;
+      i++
+   )
+   {
+      ManageScalperPositions(
+         symbols[i]
+      );
+   }
+}
+
+
+//==================================================================
+// SCALPER SCAN
+//==================================================================
+//
+// Scalper signals are processed on every tick. M1_BuildSignal()
+// internally uses closed M1 candles plus its short-term pressure
+// measurement.
+//==================================================================
+
+void ScanScalperMarket()
+{
+   if(
+      InpTradingMode==
+      EA_MODE_NORMAL
+   )
+   {
+      return;
+   }
+
+
+   string symbols[];
+
+
+   int count=
+      BuildSymbolList(
+         symbols
+      );
+
+
+   if(count<=0)
+      return;
+
+
+   for(
+      int i=0;
+      i<count;
+      i++
+   )
+   {
+      ProcessScalperSymbol(
+         symbols[i]
+      );
+   }
+}
+
+
+//==================================================================
+// NORMAL STRUCTURAL SCAN
+//==================================================================
+
+void ScanNormalMarket()
+{
+   if(
+      InpTradingMode==
+      EA_MODE_SCALPER
+   )
+   {
+      return;
+   }
+
+
+   string symbols[];
+
+
+   int count=
+      BuildSymbolList(
+         symbols
+      );
+
+
+   if(count<=0)
+      return;
+
+
+   for(
+      int i=0;
+      i<count;
+      i++
+   )
+   {
+      ProcessNormalOnNewStructureBar(
+         symbols[i]
+      );
+   }
+}
+
+
+//==================================================================
+// ACCOUNT / BROKER INFORMATION
+//==================================================================
+
+void PrintAccountInformation()
+{
+   double balance=
+      AccountInfoDouble(
+         ACCOUNT_BALANCE
+      );
+
+
+   double equity=
+      AccountInfoDouble(
+         ACCOUNT_EQUITY
+      );
+
+
+   double freeMargin=
+      AccountInfoDouble(
+         ACCOUNT_MARGIN_FREE
+      );
+
+
+   long leverage=
+      AccountInfoInteger(
+         ACCOUNT_LEVERAGE
+      );
+
+
+   Print(
+      "[ACCOUNT] Balance=",
+      DoubleToString(
+         balance,
+         2
+      ),
+      " | Equity=",
+      DoubleToString(
+         equity,
+         2
+      ),
+      " | FreeMargin=",
+      DoubleToString(
+         freeMargin,
+         2
+      ),
+      " | Leverage=1:",
+      (string)leverage
+   );
+}
+
+
+//==================================================================
+// BROKER SYMBOL INFORMATION
+//==================================================================
+
+void PrintCurrentSymbolInformation(
+   const string symbol
+)
+{
+   if(symbol=="")
+      return;
+
+
+   double point=
+      SymbolInfoDouble(
+         symbol,
+         SYMBOL_POINT
+      );
+
+
+   int digits=
+      (int)SymbolInfoInteger(
+         symbol,
+         SYMBOL_DIGITS
+      );
+
+
+   double volumeMin=
+      SymbolInfoDouble(
+         symbol,
+         SYMBOL_VOLUME_MIN
+      );
+
+
+   double volumeMax=
+      SymbolInfoDouble(
+         symbol,
+         SYMBOL_VOLUME_MAX
+      );
+
+
+   double volumeStep=
+      SymbolInfoDouble(
+         symbol,
+         SYMBOL_VOLUME_STEP
+      );
+
+
+   long spread=
+      0;
+
+
+   SymbolInfoInteger(
+      symbol,
+      SYMBOL_SPREAD,
+      spread
+   );
+
+
+   Print(
+      "[SYMBOL] ",
+      symbol,
+      " | Digits=",
+      digits,
+      " | Point=",
+      DoubleToString(
+         point,
+         digits
+      ),
+      " | MinLot=",
+      DoubleToString(
+         volumeMin,
+         4
+      ),
+      " | MaxLot=",
+      DoubleToString(
+         volumeMax,
+         4
+      ),
+      " | LotStep=",
+      DoubleToString(
+         volumeStep,
+         4
+      ),
+      " | SpreadPts=",
+      (string)spread
+   );
+}
+
+
+//==================================================================
+// ON INIT
+//==================================================================
+
+int OnInit()
+{
+   //---------------------------------------------------------------
+   // Reset global state
+   //---------------------------------------------------------------
+
+   g_lastPrimaryBar=
+      0;
+
+   g_lastConfirmBar=
+      0;
+
+   g_lastEntryBar=
+      0;
+
+
+   g_h4SetupActive=
+      false;
+
+   g_h4SetupDirection=
+      STRUCTURE_UNKNOWN;
+
+   g_h4SetupTime=
+      0;
+
+   g_h4SetupShift=
+      -1;
+
+
+   ResetM15Confirmation(
+      g_m15Confirmation
+   );
+
+
+   ResetM5Confirmation(
+      g_m5Confirmation
+   );
+
+
+   //---------------------------------------------------------------
+   // Configure CTrade
+   //---------------------------------------------------------------
+
+   Trade.SetExpertMagicNumber(
+      InpMagicNumber
+   );
+
+
+   Trade.SetDeviationInPoints(
+      InpDeviationPts
+   );
+
+
+   //---------------------------------------------------------------
+   // Initialize daily protection
+   //---------------------------------------------------------------
+
+   InitializeDailyState();
+
+
+   //---------------------------------------------------------------
+   // Initialize TradeEngine
+   //---------------------------------------------------------------
+
+   if(
+      !InitializeTradeEngine()
+   )
+   {
+      return(
+         INIT_FAILED
+      );
+   }
+
+
+   //---------------------------------------------------------------
+   // Print startup information
+   //---------------------------------------------------------------
+
+   Print(
+      "============================================================"
+   );
+
+
+   Print(
+      "EXNESS ICT EA INITIALIZING"
+   );
+
+
+   PrintEAStatus();
+
+
+   PrintAccountInformation();
+
+
+   //---------------------------------------------------------------
+   // Current chart symbol information
+   //---------------------------------------------------------------
+
+   PrintCurrentSymbolInformation(
+      _Symbol
+   );
+
+
+   //---------------------------------------------------------------
+   // Risk summary
+   //---------------------------------------------------------------
+
+   RE_PrintSummary(
+      _Symbol,
+      InpRiskPercent,
+      InpMagicNumber
+   );
+
+
+   //---------------------------------------------------------------
+   // Safety reminder
+   //---------------------------------------------------------------
+
+   if(!InpEnableTrading)
+   {
+      Print(
+         "[SAFETY] LIVE ORDER EXECUTION IS DISABLED."
+      );
+   }
+   else
+   {
+      Print(
+         "[WARNING] LIVE ORDER EXECUTION IS ENABLED."
+      );
+   }
+
+
+   //---------------------------------------------------------------
+   // Mode
+   //---------------------------------------------------------------
+
+   Print(
+      "[MODE] ",
+      TradingModeToString()
+   );
+
+
+   Print(
+      "EXNESS ICT EA INITIALIZED"
+   );
+
+
+   Print(
+      "============================================================"
+   );
+
+
+   return(
+      INIT_SUCCEEDED
+   );
+}
+
+
+//==================================================================
+// ON DEINIT
+//==================================================================
+
+void OnDeinit(
+   const int reason
+)
+{
+   Print(
+      "============================================================"
+   );
+
+
+   Print(
+      "EXNESS ICT EA DEINITIALIZING"
+   );
+
+
+   Print(
+      "Reason=",
+      (string)reason
+   );
+
+
+   //---------------------------------------------------------------
+   // Print final risk state
+   //---------------------------------------------------------------
+
+   PrintRiskStatus();
+
+
+   //---------------------------------------------------------------
+   // Reset state
+   //---------------------------------------------------------------
+
+   TE_ResetState(
+      g_tradeEngine
+   );
+
+
+   Print(
+      "EXNESS ICT EA DEINITIALIZED"
+   );
+
+
+   Print(
+      "============================================================"
+   );
+}
+
+
+//==================================================================
+// ON TICK
+//==================================================================
+
+void OnTick()
+{
+   //---------------------------------------------------------------
+   // Update daily protection first.
+   //---------------------------------------------------------------
+
+   UpdateDailyState();
+
+
+   //---------------------------------------------------------------
+   // Existing scalper positions must always be managed.
+   //---------------------------------------------------------------
+
+   ManageAllScalperPositions();
+
+
+   //---------------------------------------------------------------
+   // Normal structural pipeline.
+   //
+   // This checks only when relevant timeframe bars change.
+   //---------------------------------------------------------------
+
+   ScanNormalMarket();
+
+
+   //---------------------------------------------------------------
+   // New scalper signals.
+   //
+   // The scalper is allowed to evaluate every tick.
+   //---------------------------------------------------------------
+
+   if(
+      InpTradingMode==
+      EA_MODE_SCALPER ||
+      InpTradingMode==
+      EA_MODE_AUTO
+   )
+   {
+      if(
+         IsDailyTradingAllowed()
+      )
+      {
+         ScanScalperMarket();
+      }
+   }
+}
+
+
+//+------------------------------------------------------------------+
+//| END OF FILE                                                       |
+//+------------------------------------------------------------------+
