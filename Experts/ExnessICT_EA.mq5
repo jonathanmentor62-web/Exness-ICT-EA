@@ -1,33 +1,14 @@
 //+------------------------------------------------------------------+
 //| ExnessICT_EA.mq5                                                 |
-//| Exness ICT EA - Main Controller                                  |
-//|                                                                  |
-//| NORMAL:  H4 -> M15 -> M5 ICT pipeline                            |
-//| SCALPER: M1 reactive momentum engine                             |
-//| AUTO:    H4 -> M15 -> M5 + M1 scalper                           |
-//|                                                                  |
-//| Trading is DISABLED by default during development.               |
+//| Exness ICT EA - integrated development build                     |
 //+------------------------------------------------------------------+
 #property strict
 #property version   "0.90"
-
-#property description "Exness ICT EA"
-#property description "H4 -> M15 -> M5 ICT structure pipeline"
-#property description "Reactive M1 momentum scalper"
-#property description "Dynamic equity-based risk engine"
-#property description "Trading disabled by default during development"
-
-
-//==================================================================
-// STANDARD MT5
-//==================================================================
+#property description "H4/M15/M5 ICT analysis plus reactive M1 momentum scalper."
+#property description "Equity-based risk engine, daily protection and growth controller."
+#property description "Trading remains disabled by default during development/testing."
 
 #include <Trade/Trade.mqh>
-
-
-//==================================================================
-// PROJECT MODULES
-//==================================================================
 
 #include "../Include/Config.mqh"
 #include "../Include/MarketStructure.mqh"
@@ -39,97 +20,50 @@
 #include "../Include/RiskEngine.mqh"
 #include "../Include/M1Scalper.mqh"
 #include "../Include/ExecutionEngine.mqh"
-#include "../Include/TradeEngine.mqh"
-
-
-//==================================================================
-// GLOBAL TRADE OBJECT
-//==================================================================
+#include "../Include/GrowthController.mqh"
 
 CTrade Trade;
 
+//+------------------------------------------------------------------+
+//| Inputs                                                           |
+//+------------------------------------------------------------------+
 
-//==================================================================
-// USER INPUTS
-//==================================================================
+input ENUM_TIMEFRAMES InpPrimaryTF       = ICT_PRIMARY_TF;
+input ENUM_TIMEFRAMES InpConfirmTF       = ICT_CONFIRM_TF;
+input ENUM_TIMEFRAMES InpEntryTF         = ICT_ENTRY_TF;
 
-//------------------------------------------------------------------
-// Timeframes
-//------------------------------------------------------------------
+input double          InpRiskPercent     = ICT_RISK_PERCENT;
+input double          InpMaxTotalRiskPct = ICT_MAX_TOTAL_RISK_PERCENT;
 
-input ENUM_TIMEFRAMES InpPrimaryTF =
-   ICT_PRIMARY_TF;
+input ulong           InpMagicNumber     = ICT_MAGIC_NUMBER;
+input int             InpMaxSpreadPts    = ICT_MAX_SPREAD_PTS;
+input int             InpDeviationPts    = ICT_MAX_SLIPPAGE_PTS;
 
-input ENUM_TIMEFRAMES InpConfirmTF =
-   ICT_CONFIRM_TF;
+// IMPORTANT: keep false during development/testing.
+input bool            InpEnableTrading   = false;
 
-input ENUM_TIMEFRAMES InpEntryTF =
-   ICT_ENTRY_TF;
-
-
-//------------------------------------------------------------------
-// Risk
-//------------------------------------------------------------------
-
-input double InpRiskPercent =
-   ICT_RISK_PERCENT;
-
-input double InpMaxTotalRiskPct =
-   ICT_MAX_TOTAL_RISK_PERCENT;
-
-
-//------------------------------------------------------------------
-// Execution
-//------------------------------------------------------------------
-
-input ulong InpMagicNumber =
-   ICT_MAGIC_NUMBER;
-
-input int InpMaxSpreadPts =
-   ICT_MAX_SPREAD_PTS;
-
-input int InpDeviationPts =
-   ICT_MAX_SLIPPAGE_PTS;
-
-
-//------------------------------------------------------------------
-// MASTER TRADING SWITCH
-//
-// IMPORTANT:
-// Keep false during development/testing.
-//------------------------------------------------------------------
-
-input bool InpEnableTrading =
-   false;
-
-
-//==================================================================
-// TRADING MODE
-//==================================================================
+//+------------------------------------------------------------------+
+//| Trading modes                                                    |
+//+------------------------------------------------------------------+
 
 enum ENUM_EA_TRADING_MODE
 {
-   EA_MODE_NORMAL = 0,
-   EA_MODE_SCALPER = 1,
-   EA_MODE_AUTO = 2
+   EA_MODE_NORMAL=0,
+   EA_MODE_SCALPER=1,
+   EA_MODE_AUTO=2
 };
 
+input ENUM_EA_TRADING_MODE InpTradingMode = EA_MODE_SCALPER;
 
-input ENUM_EA_TRADING_MODE InpTradingMode =
-   EA_MODE_SCALPER;
+//+------------------------------------------------------------------+
+//| Symbol scanning                                                  |
+//+------------------------------------------------------------------+
 
+input bool InpScanMarketWatchSymbols = true;
 
-//==================================================================
-// MARKET SCANNING
-//==================================================================
-
-input bool InpScanMarketWatchSymbols =
-   true;
-
-
-//==================================================================
-// SCALPER INPUTS
-//==================================================================
+//+------------------------------------------------------------------+
+//| Scalper settings                                                 |
+//+------------------------------------------------------------------+
 
 input double InpScalpMinScore =
    ICT_SCALP_MIN_SCORE;
@@ -146,98 +80,188 @@ input int InpScalpMaxPositions =
 input int InpScalpMaxSymbolPositions =
    ICT_SCALP_MAX_SYMBOL_POSITIONS;
 
+//+------------------------------------------------------------------+
+//| Daily protection                                                 |
+//+------------------------------------------------------------------+
 
-//==================================================================
-// DAILY PROTECTION
-//==================================================================
+input double InpDailyLossLimitPct = 3.0;
 
-input double InpDailyLossLimitPct =
-   3.0;
+input double InpDailyProfitTargetMoney = 0.0;
 
-input double InpDailyProfitTargetMoney =
-   0.0;
-
-
-//==================================================================
-// STRUCTURE INPUTS
-//==================================================================
+//+------------------------------------------------------------------+
+//| ICT analysis settings                                            |
+//+------------------------------------------------------------------+
 
 input int InpStructureLookback =
    ICT_STRUCTURE_LOOKBACK;
 
-input int InpFVGScanLookback =
-   20;
+input int InpFVGScanLookback = 20;
 
 input int InpOBScanLookback =
    ICT_OB_LOOKBACK;
 
+//+------------------------------------------------------------------+
+//| Global timing state                                              |
+//+------------------------------------------------------------------+
 
-//==================================================================
-// MAIN STATE
-//==================================================================
+datetime g_lastPrimaryBar=0;
+datetime g_lastConfirmBar=0;
+datetime g_lastEntryBar=0;
+datetime g_lastScalpEntryTime=0;
 
-datetime g_lastPrimaryBar = 0;
+//+------------------------------------------------------------------+
+//| H4 setup state                                                   |
+//+------------------------------------------------------------------+
 
-datetime g_lastConfirmBar = 0;
+bool g_h4SetupActive=false;
 
-datetime g_lastEntryBar = 0;
+ENUM_STRUCTURE_DIRECTION
+g_h4SetupDirection=STRUCTURE_UNKNOWN;
 
+datetime g_h4SetupTime=0;
 
-//------------------------------------------------------------------
-// H4 setup state
-//------------------------------------------------------------------
+int g_h4SetupShift=-1;
 
-bool g_h4SetupActive =
-   false;
+//+------------------------------------------------------------------+
+//| Daily account protection state                                   |
+//+------------------------------------------------------------------+
 
-ENUM_STRUCTURE_DIRECTION g_h4SetupDirection =
-   STRUCTURE_UNKNOWN;
+datetime g_dayStart=0;
 
-datetime g_h4SetupTime =
-   0;
+double g_dayStartEquity=0.0;
 
-int g_h4SetupShift =
-   -1;
+bool g_dailyLocked=false;
 
+//+------------------------------------------------------------------+
+//| Growth controller                                                |
+//+------------------------------------------------------------------+
 
-//==================================================================
-// DAILY STATE
-//==================================================================
+GrowthController g_growthController;
 
-datetime g_dayStart =
-   0;
+//+------------------------------------------------------------------+
+//| Growth controller initialization                                 |
+//+------------------------------------------------------------------+
 
-double g_dayStartEquity =
-   0.0;
+bool InitializeGrowthController()
+{
+   GC_Reset(g_growthController);
 
-bool g_dailyLocked =
-   false;
+   //-----------------------------------------------------------------
+   // Try to recover an existing cycle.
+   //-----------------------------------------------------------------
 
+   if(GC_LoadState(
+      g_growthController,
+      InpMagicNumber))
+   {
+      if(GC_InitializeExisting(
+         g_growthController,
+         InpMagicNumber,
+         g_growthController.startingEquity,
+         g_growthController.startTime))
+      {
+         GC_Update(
+            g_growthController,
+            AccountInfoDouble(ACCOUNT_EQUITY)
+         );
 
-//==================================================================
-// TRADE ENGINE STATE
-//==================================================================
+         Print("[GROWTH] Existing growth cycle restored.");
 
-TradeEngineState g_tradeEngine;
+         GC_PrintStatus(g_growthController);
 
+         return(true);
+      }
+   }
 
-//==================================================================
-// M15 CONFIRMATION STATE
-//==================================================================
+   //-----------------------------------------------------------------
+   // No existing cycle: create one from current equity.
+   //-----------------------------------------------------------------
+
+   double equity=
+      AccountInfoDouble(ACCOUNT_EQUITY);
+
+   if(equity<=0.0)
+   {
+      Print("[GROWTH] Cannot initialize: invalid account equity.");
+      return(false);
+   }
+
+   if(!GC_InitializeNew(
+      g_growthController,
+      InpMagicNumber,
+      equity))
+   {
+      Print("[GROWTH] Failed to create growth cycle.");
+      return(false);
+   }
+
+   GC_Update(
+      g_growthController,
+      equity
+   );
+
+   Print("[GROWTH] New growth cycle initialized.");
+
+   GC_PrintStatus(g_growthController);
+
+   return(true);
+}
+
+//+------------------------------------------------------------------+
+//| Update growth controller                                         |
+//+------------------------------------------------------------------+
+
+void UpdateGrowthController()
+{
+   if(!g_growthController.initialized)
+      return;
+
+   double equity=
+      AccountInfoDouble(ACCOUNT_EQUITY);
+
+   if(equity<=0.0)
+      return;
+
+   GC_Update(
+      g_growthController,
+      equity
+   );
+}
+
+//+------------------------------------------------------------------+
+//| Growth trading permission                                        |
+//+------------------------------------------------------------------+
+
+bool IsGrowthTradingAllowed()
+{
+   UpdateGrowthController();
+
+   if(!g_growthController.initialized)
+      return(false);
+
+   if(GC_TargetReached(g_growthController))
+   {
+      return(false);
+   }
+
+   return(true);
+}
+
+//+------------------------------------------------------------------+
+//| Confirmation states                                              |
+//+------------------------------------------------------------------+
 
 enum ENUM_CONFIRMATION_STATE
 {
-   CONFIRMATION_NONE = 0,
+   CONFIRMATION_NONE=0,
    CONFIRMATION_WAITING,
    CONFIRMATION_CONFIRMED,
    CONFIRMATION_INVALID
 };
 
-
 struct M15Confirmation
 {
    bool confirmed;
-
    bool valid;
 
    ENUM_CONFIRMATION_STATE state;
@@ -245,13 +269,9 @@ struct M15Confirmation
    ENUM_STRUCTURE_DIRECTION direction;
 
    bool displacement;
-
    bool mss;
-
    bool bos;
-
    bool fvgPresent;
-
    bool orderBlockPresent;
 
    double brokenLevel;
@@ -263,199 +283,132 @@ struct M15Confirmation
    string reason;
 };
 
-
 M15Confirmation g_m15Confirmation;
 
 M5Confirmation g_m5Confirmation;
 
-
-//==================================================================
-// RESET M15 CONFIRMATION
-//==================================================================
+//+------------------------------------------------------------------+
+//| Reset M15 confirmation                                           |
+//+------------------------------------------------------------------+
 
 void ResetM15Confirmation(
-   M15Confirmation &c
-)
+   M15Confirmation &c)
 {
-   c.confirmed =
-      false;
+   c.confirmed=false;
+   c.valid=false;
 
-   c.valid =
-      false;
-
-   c.state =
+   c.state=
       CONFIRMATION_NONE;
 
-   c.direction =
+   c.direction=
       STRUCTURE_UNKNOWN;
 
-   c.displacement =
-      false;
+   c.displacement=false;
+   c.mss=false;
+   c.bos=false;
 
-   c.mss =
-      false;
+   c.fvgPresent=false;
+   c.orderBlockPresent=false;
 
-   c.bos =
-      false;
+   c.brokenLevel=0.0;
 
-   c.fvgPresent =
-      false;
+   c.confirmationTime=0;
 
-   c.orderBlockPresent =
-      false;
+   c.confirmationShift=-1;
 
-   c.brokenLevel =
-      0.0;
-
-   c.confirmationTime =
-      0;
-
-   c.confirmationShift =
-      -1;
-
-   c.reason =
-      "";
+   c.reason="";
 }
 
-
-//==================================================================
-// SYMBOL TRADABILITY
-//==================================================================
+//+------------------------------------------------------------------+
+//| Symbol tradability                                               |
+//+------------------------------------------------------------------+
 
 bool IsSymbolTradable(
-   const string symbol
-)
+   const string symbol)
 {
    if(symbol=="")
       return(false);
 
-
-   if(
-      !SymbolSelect(
-         symbol,
-         true
-      )
-   )
-   {
+   if(!SymbolSelect(symbol,true))
       return(false);
-   }
-
 
    long mode=0;
 
-
-   if(
-      !SymbolInfoInteger(
-         symbol,
-         SYMBOL_TRADE_MODE,
-         mode
-      )
-   )
-   {
+   if(!SymbolInfoInteger(
+      symbol,
+      SYMBOL_TRADE_MODE,
+      mode))
       return(false);
-   }
-
 
    return(
-      mode!=
-      SYMBOL_TRADE_MODE_DISABLED
+      mode!=SYMBOL_TRADE_MODE_DISABLED
    );
 }
 
-
-//==================================================================
-// SPREAD FILTER
-//==================================================================
+//+------------------------------------------------------------------+
+//| Spread filter                                                    |
+//+------------------------------------------------------------------+
 
 bool IsSpreadAcceptable(
-   const string symbol
-)
+   const string symbol)
 {
    long spread=0;
 
-
-   if(
-      !SymbolInfoInteger(
-         symbol,
-         SYMBOL_SPREAD,
-         spread
-      )
-   )
-   {
+   if(!SymbolInfoInteger(
+      symbol,
+      SYMBOL_SPREAD,
+      spread))
       return(false);
-   }
-
 
    return(
-      spread<=
-      InpMaxSpreadPts
+      spread<=InpMaxSpreadPts
    );
 }
 
-
-//==================================================================
-// DAY START
-//==================================================================
+//+------------------------------------------------------------------+
+//| Current broker/server day start                                  |
+//+------------------------------------------------------------------+
 
 datetime GetDayStart()
 {
    MqlDateTime dt;
-
 
    TimeToStruct(
       TimeCurrent(),
       dt
    );
 
-
    dt.hour=0;
-
    dt.min=0;
-
    dt.sec=0;
 
-
    return(
-      StructToTime(
-         dt
-      )
+      StructToTime(dt)
    );
 }
 
-
-//==================================================================
-// DAILY STATE
-//==================================================================
+//+------------------------------------------------------------------+
+//| Daily protection state                                           |
+//+------------------------------------------------------------------+
 
 void UpdateDailyState()
 {
    datetime today=
       GetDayStart();
 
-
-   //---------------------------------------------------------------
-   // New broker/server day
-   //---------------------------------------------------------------
-
-   if(
-      g_dayStart!=
-      today
-   )
+   if(g_dayStart!=today)
    {
-      g_dayStart=
-         today;
+      g_dayStart=today;
 
       g_dayStartEquity=
          AccountInfoDouble(
             ACCOUNT_EQUITY
          );
 
-      g_dailyLocked=
-         false;
-
+      g_dailyLocked=false;
 
       Print(
-         "[DAILY] New trading day | Start equity=",
+         "[DAILY] New trading day. Start equity=",
          DoubleToString(
             g_dayStartEquity,
             2
@@ -463,14 +416,7 @@ void UpdateDailyState()
       );
    }
 
-
-   //---------------------------------------------------------------
-   // Safety initialization
-   //---------------------------------------------------------------
-
-   if(
-      g_dayStartEquity<=0.0
-   )
+   if(g_dayStartEquity<=0.0)
    {
       g_dayStartEquity=
          AccountInfoDouble(
@@ -478,29 +424,18 @@ void UpdateDailyState()
          );
    }
 
-
    double equity=
       AccountInfoDouble(
          ACCOUNT_EQUITY
       );
 
-
    if(equity<=0.0)
       return;
 
-
-   //---------------------------------------------------------------
-   // Daily change
-   //---------------------------------------------------------------
-
    double dailyChangeMoney=
-      equity-
-      g_dayStartEquity;
+      equity-g_dayStartEquity;
 
-
-   double dailyLossPct=
-      0.0;
-
+   double dailyLossPct=0.0;
 
    if(
       g_dayStartEquity>0.0 &&
@@ -508,41 +443,25 @@ void UpdateDailyState()
    )
    {
       dailyLossPct=
-         (
-            -dailyChangeMoney/
-            g_dayStartEquity
-         )*
+         (-dailyChangeMoney/
+          g_dayStartEquity)*
          100.0;
    }
 
-
-   //---------------------------------------------------------------
-   // Daily loss protection
-   //---------------------------------------------------------------
-
    if(
       InpDailyLossLimitPct>0.0 &&
-      dailyLossPct>=
-      InpDailyLossLimitPct
+      dailyLossPct>=InpDailyLossLimitPct
    )
    {
       if(!g_dailyLocked)
       {
          Print(
-            "[DAILY SAFETY] Loss limit reached. ",
-            "New entries locked."
+            "[DAILY SAFETY] Daily loss limit reached. New entries locked."
          );
       }
 
-
-      g_dailyLocked=
-         true;
+      g_dailyLocked=true;
    }
-
-
-   //---------------------------------------------------------------
-   // Daily profit target
-   //---------------------------------------------------------------
 
    if(
       InpDailyProfitTargetMoney>0.0 &&
@@ -553,1930 +472,847 @@ void UpdateDailyState()
       if(!g_dailyLocked)
       {
          Print(
-            "[DAILY SAFETY] Profit target reached. ",
-            "New entries locked."
+            "[DAILY SAFETY] Daily profit target reached. New entries locked."
          );
       }
 
-
-      g_dailyLocked=
-         true;
+      g_dailyLocked=true;
    }
 }
 
-
-//==================================================================
-// DAILY ENTRY PERMISSION
-//==================================================================
+//+------------------------------------------------------------------+
+//| Daily entry permission                                           |
+//+------------------------------------------------------------------+
 
 bool IsDailyTradingAllowed()
 {
    UpdateDailyState();
 
-
-   return(
-      !g_dailyLocked
-   );
+   return(!g_dailyLocked);
 }
 
+//+------------------------------------------------------------------+
+//| Combined new-entry permission                                    |
+//+------------------------------------------------------------------+
 
-//==================================================================
-// DIRECTION AGREEMENT
-//==================================================================
+bool IsNewEntryAllowed()
+{
+   if(!InpEnableTrading)
+      return(false);
+
+   if(!IsDailyTradingAllowed())
+      return(false);
+
+   if(!IsGrowthTradingAllowed())
+      return(false);
+
+   return(true);
+}
+
+//+------------------------------------------------------------------+
+//| Direction agreement                                              |
+//+------------------------------------------------------------------+
 
 bool IsConfirmationDirectionValid(
    const ENUM_STRUCTURE_DIRECTION h4Direction,
-   const ENUM_STRUCTURE_DIRECTION lowerDirection
-)
+   const ENUM_STRUCTURE_DIRECTION lowerDirection)
 {
    return(
-      h4Direction!=
-      STRUCTURE_UNKNOWN &&
-      lowerDirection==
-      h4Direction
+      h4Direction!=STRUCTURE_UNKNOWN &&
+      lowerDirection==h4Direction
    );
 }
 
-
-//==================================================================
-// VALIDATE M15 CONFIRMATION
-//==================================================================
+//+------------------------------------------------------------------+
+//| Validate M15 confirmation                                        |
+//+------------------------------------------------------------------+
 
 bool ValidateM15Confirmation(
    const M15Confirmation &c,
-   const ENUM_STRUCTURE_DIRECTION expectedDirection
-)
+   const ENUM_STRUCTURE_DIRECTION expectedDirection)
 {
-   if(
-      !c.valid ||
-      !c.confirmed
-   )
-   {
+   if(!c.valid || !c.confirmed)
       return(false);
-   }
 
-
-   if(
-      !IsConfirmationDirectionValid(
-         expectedDirection,
-         c.direction
-      )
-   )
-   {
+   if(!IsConfirmationDirectionValid(
+      expectedDirection,
+      c.direction))
       return(false);
-   }
-
 
    if(!c.displacement)
       return(false);
 
-
-   if(
-      !c.mss &&
-      !c.bos
-   )
-   {
+   if(!c.mss && !c.bos)
       return(false);
-   }
-
 
    if(
       ICT_REQUIRE_FVG &&
       !c.fvgPresent
    )
-   {
       return(false);
-   }
-
 
    if(
       c.confirmationTime<=0 ||
       c.confirmationShift<1
    )
-   {
       return(false);
-   }
-
 
    if(c.brokenLevel<=0.0)
       return(false);
 
-
    return(true);
 }
-//==================================================================
-// H4 PRIMARY STRUCTURE ANALYSIS
-//==================================================================
-//
-// This is the first stage of the NORMAL ICT pipeline:
-//
-// H4 structure
-//     |
-//     +--> direction
-//     +--> displacement
-//     +--> MSS/BOS
-//     +--> setup activation
-//
-// No trade is opened here.
-// This stage only establishes the higher-timeframe context.
-//==================================================================
+//+------------------------------------------------------------------+
+//| Analyze H4 market structure                                      |
+//+------------------------------------------------------------------+
 
-bool AnalyzeH4PrimaryStructure(
+bool AnalyzeH4Structure(
    const string symbol,
-   ENUM_STRUCTURE_DIRECTION &direction,
-   datetime &signalTime
-)
+   ENUM_STRUCTURE_DIRECTION &direction)
 {
-   direction =
-      STRUCTURE_UNKNOWN;
+   direction=STRUCTURE_UNKNOWN;
 
-   signalTime =
-      0;
-
-
-   //---------------------------------------------------------------
-   // Basic history check
-   //---------------------------------------------------------------
-
-   if(
-      Bars(
-         symbol,
-         InpPrimaryTF
-      ) <
-      ICT_MIN_HISTORY_BARS
-   )
-   {
+   if(Bars(
+      symbol,
+      InpPrimaryTF
+   )<ICT_MIN_HISTORY_BARS)
       return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Analyze the primary structure
-   //---------------------------------------------------------------
 
    StructureSignal signal;
 
-
-   AnalyzeStructureSignal(
+   if(!SS_BuildStructureSignal(
       symbol,
       InpPrimaryTF,
       InpStructureLookback,
-      signal
-   );
-
+      signal))
+   {
+      return(false);
+   }
 
    if(!signal.valid)
       return(false);
 
-
    direction=
-      GetSignalDirection(
-         signal
-      );
+      signal.direction;
 
-
-   if(
-      direction==
-      STRUCTURE_UNKNOWN
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // A structural signal must also have displacement.
-   //---------------------------------------------------------------
-
-   if(!signal.displacement)
-   {
-      return(false);
-   }
-
-
-   signalTime=
-      signal.signalTime;
-
-
-   //---------------------------------------------------------------
-   // Diagnostic information
-   //---------------------------------------------------------------
-
-   Print(
-      "[H4 STRUCTURE] ",
-      symbol,
-      " | Direction=",
-      StructureDirectionToString(
-         direction
-      ),
-      " | Event=",
-      StructureEventToString(
-         signal.event
-      ),
-      " | Displacement=",
-      (
-         signal.displacement
-         ?
-         "YES"
-         :
-         "NO"
-      )
+   return(
+      direction!=STRUCTURE_UNKNOWN
    );
-
-
-   return(true);
 }
 
-
-//==================================================================
-// H4 LIQUIDITY ANALYSIS
-//==================================================================
-//
-// Liquidity is treated as context/target information.
-// A liquidity level alone does NOT trigger an entry.
-//
-// The intended sequence remains:
-//
-// liquidity -> sweep/reaction -> displacement -> structure
-//==================================================================
+//+------------------------------------------------------------------+
+//| Analyze H4 liquidity                                             |
+//+------------------------------------------------------------------+
 
 bool AnalyzeH4Liquidity(
    const string symbol,
-   const ENUM_STRUCTURE_DIRECTION direction
-)
+   const ENUM_STRUCTURE_DIRECTION direction)
 {
-   if(
-      direction==
-      STRUCTURE_UNKNOWN
-   )
+   if(direction==STRUCTURE_UNKNOWN)
+      return(false);
+
+   LiquidityZone liquidity;
+
+   if(!LQ_FindLiquidity(
+      symbol,
+      InpPrimaryTF,
+      direction,
+      InpStructureLookback,
+      liquidity))
    {
       return(false);
    }
 
-
-   LiquidityLevel buySide;
-
-   LiquidityLevel sellSide;
-
-
-   bool haveBuySide=
-      GetBuySideLiquidity(
-         symbol,
-         InpPrimaryTF,
-         InpStructureLookback,
-         buySide
-      );
-
-
-   bool haveSellSide=
-      GetSellSideLiquidity(
-         symbol,
-         InpPrimaryTF,
-         InpStructureLookback,
-         sellSide
-      );
-
-
-   if(
-      !haveBuySide &&
-      !haveSellSide
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Bullish structure normally seeks/uses sell-side liquidity
-   // before the bullish displacement.
-   //---------------------------------------------------------------
-
-   if(
-      direction==
-      STRUCTURE_BULLISH
-   )
-   {
-      if(haveSellSide)
-      {
-         Print(
-            "[H4 LIQUIDITY] ",
-            symbol,
-            " | Bullish context | Sell-side liquidity=",
-            DoubleToString(
-               sellSide.price,
-               (int)SymbolInfoInteger(
-                  symbol,
-                  SYMBOL_DIGITS
-               )
-            )
-         );
-
-
-         return(true);
-      }
-   }
-
-
-   //---------------------------------------------------------------
-   // Bearish structure normally seeks/uses buy-side liquidity
-   // before the bearish displacement.
-   //---------------------------------------------------------------
-
-   if(
-      direction==
-      STRUCTURE_BEARISH
-   )
-   {
-      if(haveBuySide)
-      {
-         Print(
-            "[H4 LIQUIDITY] ",
-            symbol,
-            " | Bearish context | Buy-side liquidity=",
-            DoubleToString(
-               buySide.price,
-               (int)SymbolInfoInteger(
-                  symbol,
-                  SYMBOL_DIGITS
-               )
-            )
-         );
-
-
-         return(true);
-      }
-   }
-
-
-   return(false);
+   return(liquidity.valid);
 }
 
-
-//==================================================================
-// H4 FVG ANALYSIS
-//==================================================================
+//+------------------------------------------------------------------+
+//| Analyze H4 FVG                                                   |
+//+------------------------------------------------------------------+
 
 bool AnalyzeH4FVG(
    const string symbol,
-   const ENUM_STRUCTURE_DIRECTION direction,
-   FVGZone &zone
-)
+   const ENUM_STRUCTURE_DIRECTION direction)
 {
-   ResetFVG(
-      zone
-   );
+   if(!ICT_REQUIRE_FVG)
+      return(true);
 
-
-   if(
-      direction==
-      STRUCTURE_UNKNOWN
-   )
-   {
-      return(false);
-   }
-
-
-   bool found=
-      DetectFVG(
-         symbol,
-         InpPrimaryTF,
-         InpFVGScanLookback,
-         zone
-      );
-
-
-   if(!found)
-   {
-      Print(
-         "[H4 FVG] ",
-         symbol,
-         " | No FVG detected."
-      );
-
-
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Direction must agree with the H4 structure.
-   //---------------------------------------------------------------
-
-   if(
-      direction==
-      STRUCTURE_BULLISH &&
-      zone.direction!=
-      FVG_BULLISH
-   )
-   {
-      return(false);
-   }
-
-
-   if(
-      direction==
-      STRUCTURE_BEARISH &&
-      zone.direction!=
-      FVG_BEARISH
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Optional minimum FVG size filter
-   //---------------------------------------------------------------
-
-   double point=
-      SymbolInfoDouble(
-         symbol,
-         SYMBOL_POINT
-      );
-
-
-   if(point<=0.0)
+   if(direction==STRUCTURE_UNKNOWN)
       return(false);
 
+   FVGZone fvg;
 
-   double sizePoints=
-      MathAbs(
-         zone.high-
-         zone.low
-      )/
-      point;
-
-
-   if(
-      sizePoints<
-      ICT_MIN_FVG_SIZE_PTS
-   )
-   {
-      return(false);
-   }
-
-
-   Print(
-      "[H4 FVG] ",
+   if(!FVG_FindLatest(
       symbol,
-      " | Direction=",
-      FVGDirectionToString(
-         zone.direction
-      ),
-      " | Low=",
-      DoubleToString(
-         zone.low,
-         (int)SymbolInfoInteger(
-            symbol,
-            SYMBOL_DIGITS
-         )
-      ),
-      " | High=",
-      DoubleToString(
-         zone.high,
-         (int)SymbolInfoInteger(
-            symbol,
-            SYMBOL_DIGITS
-         )
-      ),
-      " | SizePts=",
-      DoubleToString(
-         sizePoints,
-         1
-      )
-   );
+      InpPrimaryTF,
+      direction,
+      InpFVGScanLookback,
+      fvg))
+   {
+      return(false);
+   }
 
-
-   return(true);
+   return(fvg.valid);
 }
 
-
-//==================================================================
-// H4 ORDER BLOCK ANALYSIS
-//==================================================================
+//+------------------------------------------------------------------+
+//| Analyze H4 order block                                           |
+//+------------------------------------------------------------------+
 
 bool AnalyzeH4OrderBlock(
    const string symbol,
-   const ENUM_STRUCTURE_DIRECTION direction,
-   OrderBlock &block
-)
+   const ENUM_STRUCTURE_DIRECTION direction)
 {
-   ResetOrderBlock(
-      block
-   );
-
-
    if(!ICT_ENABLE_ORDER_BLOCK)
       return(true);
 
-
-   if(
-      direction==
-      STRUCTURE_UNKNOWN
-   )
-   {
+   if(direction==STRUCTURE_UNKNOWN)
       return(false);
-   }
 
+   OrderBlockZone ob;
 
-   bool found=
-      false;
-
-
-   //---------------------------------------------------------------
-   // Bullish order block
-   //---------------------------------------------------------------
-
-   if(
-      direction==
-      STRUCTURE_BULLISH
-   )
-   {
-      found=
-         FindBullishOrderBlock(
-            symbol,
-            InpPrimaryTF,
-            InpOBScanLookback,
-            block
-         );
-   }
-
-
-   //---------------------------------------------------------------
-   // Bearish order block
-   //---------------------------------------------------------------
-
-   if(
-      direction==
-      STRUCTURE_BEARISH
-   )
-   {
-      found=
-         FindBearishOrderBlock(
-            symbol,
-            InpPrimaryTF,
-            InpOBScanLookback,
-            block
-         );
-   }
-
-
-   if(!found)
-   {
-      Print(
-         "[H4 OB] ",
-         symbol,
-         " | No matching order block found."
-      );
-
-
-      return(false);
-   }
-
-
-   Print(
-      "[H4 OB] ",
+   if(!OB_FindLatest(
       symbol,
-      " | Direction=",
-      OrderBlockDirectionToString(
-         block.direction
-      ),
-      " | Status=",
-      OrderBlockStatusToString(
-         block.status
-      ),
-      " | Low=",
-      DoubleToString(
-         block.low,
-         (int)SymbolInfoInteger(
-            symbol,
-            SYMBOL_DIGITS
-         )
-      ),
-      " | High=",
-      DoubleToString(
-         block.high,
-         (int)SymbolInfoInteger(
-            symbol,
-            SYMBOL_DIGITS
-         )
-      )
-   );
+      InpPrimaryTF,
+      direction,
+      InpOBScanLookback,
+      ob))
+   {
+      return(false);
+   }
 
-
-   return(true);
+   return(ob.valid);
 }
 
+//+------------------------------------------------------------------+
+//| Build M15 confirmation                                           |
+//+------------------------------------------------------------------+
 
-//==================================================================
-// CREATE H4 SETUP
-//==================================================================
-//
-// H4 is the context layer.
-// It does NOT directly execute a trade.
-//
-// The setup remains active only long enough for M15/M5 confirmation.
-//==================================================================
-
-bool BuildH4Setup(
-   const string symbol
-)
-{
-   ENUM_STRUCTURE_DIRECTION direction;
-
-   datetime signalTime;
-
-
-   if(
-      !AnalyzeH4PrimaryStructure(
-         symbol,
-         direction,
-         signalTime
-      )
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Liquidity context
-   //---------------------------------------------------------------
-
-   AnalyzeH4Liquidity(
-      symbol,
-      direction
-   );
-
-
-   //---------------------------------------------------------------
-   // FVG context
-   //---------------------------------------------------------------
-
-   FVGZone fvg;
-
-   bool haveFVG=
-      AnalyzeH4FVG(
-         symbol,
-         direction,
-         fvg
-      );
-
-
-   //---------------------------------------------------------------
-   // Order block context
-   //---------------------------------------------------------------
-
-   OrderBlock block;
-
-   bool haveOB=
-      AnalyzeH4OrderBlock(
-         symbol,
-         direction,
-         block
-      );
-
-
-   //---------------------------------------------------------------
-   // ICT setup requires FVG when configured.
-   //---------------------------------------------------------------
-
-   if(
-      ICT_REQUIRE_FVG &&
-      !haveFVG
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Activate setup
-   //---------------------------------------------------------------
-
-   g_h4SetupActive=
-      true;
-
-   g_h4SetupDirection=
-      direction;
-
-   g_h4SetupTime=
-      signalTime;
-
-   g_h4SetupShift=
-      1;
-
-
-   Print(
-      "[H4 SETUP] ACTIVE | ",
-      symbol,
-      " | Direction=",
-      StructureDirectionToString(
-         direction
-      ),
-      " | FVG=",
-      (
-         haveFVG
-         ?
-         "YES"
-         :
-         "NO"
-      ),
-      " | OB=",
-      (
-         haveOB
-         ?
-         "YES"
-         :
-         "NO"
-      )
-   );
-
-
-   return(true);
-}
-
-
-//==================================================================
-// M15 CONFIRMATION ANALYSIS
-//==================================================================
-//
-// M15 is the primary confirmation timeframe for H4.
-//
-// Required confirmation:
-//
-// H4 direction
-//      |
-//      v
-// M15 displacement
-//      |
-//      v
-// M15 MSS/BOS
-//      |
-//      v
-// M15 FVG
-//      |
-//      v
-// M5 execution confirmation
-//==================================================================
-
-bool AnalyzeM15Confirmation(
+bool BuildM15Confirmation(
    const string symbol,
-   const ENUM_STRUCTURE_DIRECTION expectedDirection,
-   M15Confirmation &confirmation
-)
+   const ENUM_STRUCTURE_DIRECTION expectedDirection)
 {
    ResetM15Confirmation(
-      confirmation
+      g_m15Confirmation
    );
 
-
-   if(
-      expectedDirection==
-      STRUCTURE_UNKNOWN
-   )
-   {
+   if(expectedDirection==
+      STRUCTURE_UNKNOWN)
       return(false);
-   }
 
-
-   //---------------------------------------------------------------
-   // History
-   //---------------------------------------------------------------
-
-   if(
-      Bars(
-         symbol,
-         InpConfirmTF
-      )<
-      ICT_MIN_HISTORY_BARS
-   )
-   {
+   if(Bars(
+      symbol,
+      InpConfirmTF
+   )<ICT_MIN_HISTORY_BARS)
       return(false);
-   }
 
+   //-----------------------------------------------------------------
+   // M15 structure
+   //-----------------------------------------------------------------
 
-   //---------------------------------------------------------------
-   // Structure
-   //---------------------------------------------------------------
+   StructureSignal m15Structure;
 
-   StructureSignal signal;
-
-
-   AnalyzeStructureSignal(
+   if(!SS_BuildStructureSignal(
       symbol,
       InpConfirmTF,
       InpStructureLookback,
-      signal
-   );
-
-
-   if(!signal.valid)
+      m15Structure))
    {
-      confirmation.state=
-         CONFIRMATION_WAITING;
-
-      confirmation.reason=
-         "No valid M15 structure signal.";
-
       return(false);
    }
 
+   if(!m15Structure.valid)
+      return(false);
 
-   ENUM_STRUCTURE_DIRECTION direction=
-      GetSignalDirection(
-         signal
-      );
-
-
-   confirmation.direction=
-      direction;
-
-   confirmation.displacement=
-      signal.displacement;
-
-   confirmation.mss=
-      signal.mss;
-
-   confirmation.bos=
-      signal.bos;
-
-   confirmation.brokenLevel=
-      signal.brokenLevel;
-
-   confirmation.confirmationTime=
-      signal.signalTime;
-
-   confirmation.confirmationShift=
-      signal.signalShift;
-
-
-   //---------------------------------------------------------------
-   // Direction agreement
-   //---------------------------------------------------------------
-
-   if(
-      direction!=
-      expectedDirection
-   )
+   if(m15Structure.direction!=
+      expectedDirection)
    {
-      confirmation.state=
-         CONFIRMATION_INVALID;
-
-      confirmation.reason=
-         "M15 direction disagrees with H4.";
-
       return(false);
    }
 
+   g_m15Confirmation.direction=
+      m15Structure.direction;
 
-   //---------------------------------------------------------------
-   // Displacement
-   //---------------------------------------------------------------
+   //-----------------------------------------------------------------
+   // Structure confirmation
+   //-----------------------------------------------------------------
 
-   if(!signal.displacement)
-   {
-      confirmation.state=
-         CONFIRMATION_WAITING;
+   g_m15Confirmation.mss=
+      m15Structure.mss;
 
-      confirmation.reason=
-         "M15 displacement not confirmed.";
+   g_m15Confirmation.bos=
+      m15Structure.bos;
 
-      return(false);
-   }
+   g_m15Confirmation.displacement=
+      m15Structure.displacement;
 
+   g_m15Confirmation.brokenLevel=
+      m15Structure.brokenLevel;
 
-   //---------------------------------------------------------------
-   // MSS/BOS
-   //---------------------------------------------------------------
+   //-----------------------------------------------------------------
+   // FVG confirmation
+   //-----------------------------------------------------------------
 
-   if(
-      !signal.mss &&
-      !signal.bos
-   )
-   {
-      confirmation.state=
-         CONFIRMATION_WAITING;
+   FVGZone m15FVG;
 
-      confirmation.reason=
-         "M15 MSS/BOS not confirmed.";
-
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // FVG
-   //---------------------------------------------------------------
-
-   FVGZone fvg;
-
-
-   bool haveFVG=
-      AnalyzeH4FVG(
+   bool fvgFound=
+      FVG_FindLatest(
          symbol,
+         InpConfirmTF,
          expectedDirection,
-         fvg
+         InpFVGScanLookback,
+         m15FVG
       );
 
+   g_m15Confirmation.fvgPresent=
+      fvgFound &&
+      m15FVG.valid;
 
-   confirmation.fvgPresent=
-      haveFVG;
-
-
-   if(
-      ICT_REQUIRE_FVG &&
-      !haveFVG
-   )
-   {
-      confirmation.state=
-         CONFIRMATION_WAITING;
-
-      confirmation.reason=
-         "Required FVG not present.";
-
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Order block
-   //---------------------------------------------------------------
+   //-----------------------------------------------------------------
+   // Order block confirmation
+   //-----------------------------------------------------------------
 
    if(ICT_ENABLE_ORDER_BLOCK)
    {
-      OrderBlock block;
+      OrderBlockZone m15OB;
 
-
-      bool haveOB=
-         AnalyzeH4OrderBlock(
+      bool obFound=
+         OB_FindLatest(
             symbol,
+            InpConfirmTF,
             expectedDirection,
-            block
+            InpOBScanLookback,
+            m15OB
          );
 
-
-      confirmation.orderBlockPresent=
-         haveOB;
+      g_m15Confirmation.orderBlockPresent=
+         obFound &&
+         m15OB.valid;
    }
    else
    {
-      confirmation.orderBlockPresent=
-         false;
+      g_m15Confirmation.orderBlockPresent=
+         true;
    }
 
+   //-----------------------------------------------------------------
+   // Final M15 state
+   //-----------------------------------------------------------------
 
-   //---------------------------------------------------------------
-   // Final validation
-   //---------------------------------------------------------------
+   g_m15Confirmation.confirmed=
+      g_m15Confirmation.displacement &&
+      (
+         g_m15Confirmation.mss ||
+         g_m15Confirmation.bos
+      );
 
-   confirmation.valid=
-      true;
+   if(
+      ICT_REQUIRE_FVG &&
+      !g_m15Confirmation.fvgPresent
+   )
+   {
+      g_m15Confirmation.confirmed=false;
+   }
 
-   confirmation.confirmed=
-      true;
+   if(!g_m15Confirmation.confirmed)
+   {
+      g_m15Confirmation.valid=false;
 
-   confirmation.state=
+      g_m15Confirmation.state=
+         CONFIRMATION_WAITING;
+
+      g_m15Confirmation.reason=
+         "M15 confirmation incomplete";
+
+      return(false);
+   }
+
+   g_m15Confirmation.valid=true;
+
+   g_m15Confirmation.state=
       CONFIRMATION_CONFIRMED;
 
-   confirmation.reason=
-      "M15 ICT confirmation valid.";
-
-
-   Print(
-      "[M15 CONFIRMATION] ",
-      symbol,
-      " | Direction=",
-      StructureDirectionToString(
-         confirmation.direction
-      ),
-      " | MSS=",
-      (
-         confirmation.mss
-         ?
-         "YES"
-         :
-         "NO"
-      ),
-      " | BOS=",
-      (
-         confirmation.bos
-         ?
-         "YES"
-         :
-         "NO"
-      ),
-      " | Displacement=",
-      (
-         confirmation.displacement
-         ?
-         "YES"
-         :
-         "NO"
-      ),
-      " | FVG=",
-      (
-         confirmation.fvgPresent
-         ?
-         "YES"
-         :
-         "NO"
-      )
-   );
-
-
-   return(
-      ValidateM15Confirmation(
-         confirmation,
-         expectedDirection
-      )
-   );
-}
-
-
-//==================================================================
-// M5 EXECUTION CONFIRMATION
-//==================================================================
-//
-// M5 is the final confirmation before a NORMAL-mode entry.
-//
-// The M5 module is deliberately kept separate so the execution
-// logic can later be tightened without changing the H4/M15 engine.
-//==================================================================
-
-bool AnalyzeM5ExecutionConfirmation(
-   const string symbol,
-   const ENUM_STRUCTURE_DIRECTION expectedDirection
-)
-{
-   ResetM5Confirmation(
-      g_m5Confirmation
-   );
-
-
-   if(
-      expectedDirection==
-      STRUCTURE_UNKNOWN
-   )
-   {
-      return(false);
-   }
-
-
-   bool confirmed=
-      AnalyzeM5Confirmation(
+   g_m15Confirmation.confirmationTime=
+      iTime(
          symbol,
-         expectedDirection,
-         g_m5Confirmation
-      );
-
-
-   if(!confirmed)
-   {
-      return(false);
-   }
-
-
-   if(
-      !g_m5Confirmation.valid
-   )
-   {
-      return(false);
-   }
-
-
-   if(
-      g_m5Confirmation.direction!=
-      expectedDirection
-   )
-   {
-      return(false);
-   }
-
-
-   Print(
-      "[M5 CONFIRMATION] ",
-      symbol,
-      " | Direction=",
-      StructureDirectionToString(
-         g_m5Confirmation.direction
-      ),
-      " | CONFIRMED"
-   );
-
-
-   return(true);
-}
-//==================================================================
-// NORMAL ICT PIPELINE
-//==================================================================
-//
-// Complete NORMAL sequence:
-//
-// H4
-//  |
-//  +--> structure
-//  +--> liquidity context
-//  +--> FVG / OB context
-//  |
-//  v
-// M15
-//  |
-//  +--> displacement
-//  +--> MSS / BOS
-//  +--> confirmation
-//  |
-//  v
-// M5
-//  |
-//  +--> execution confirmation
-//  |
-//  v
-// Execution engine
-//
-// This function currently prepares and validates the complete
-// structural pipeline. The actual order execution remains controlled
-// by the central execution/risk engine.
-//==================================================================
-
-bool ProcessNormalICTPipeline(
-   const string symbol
-)
-{
-   //---------------------------------------------------------------
-   // Trading mode check
-   //---------------------------------------------------------------
-
-   if(
-      InpTradingMode==
-      EA_MODE_SCALPER
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Daily safety
-   //---------------------------------------------------------------
-
-   if(
-      !IsDailyTradingAllowed()
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Symbol
-   //---------------------------------------------------------------
-
-   if(
-      !IsSymbolTradable(
-         symbol
-      )
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Spread
-   //---------------------------------------------------------------
-
-   if(
-      !IsSpreadAcceptable(
-         symbol
-      )
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // STEP 1
-   // H4 primary structure
-   //---------------------------------------------------------------
-
-   if(
-      !BuildH4Setup(
-         symbol
-      )
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // STEP 2
-   // M15 confirmation
-   //---------------------------------------------------------------
-
-   if(
-      !AnalyzeM15Confirmation(
-         symbol,
-         g_h4SetupDirection,
-         g_m15Confirmation
-      )
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // STEP 3
-   // M5 execution confirmation
-   //---------------------------------------------------------------
-
-   if(
-      !AnalyzeM5ExecutionConfirmation(
-         symbol,
-         g_h4SetupDirection
-      )
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // COMPLETE
-   //---------------------------------------------------------------
-
-   Print(
-      "[ICT PIPELINE] COMPLETE | ",
-      symbol,
-      " | H4 -> M15 -> M5 | Direction=",
-      StructureDirectionToString(
-         g_h4SetupDirection
-      )
-   );
-
-
-   //---------------------------------------------------------------
-   // IMPORTANT
-   //
-   // The structural pipeline is now confirmed.
-   //
-   // Normal-mode order execution will be connected to the dedicated
-   // structural execution function after the final confirmation
-   // layer is validated.
-   //---------------------------------------------------------------
-
-   return(true);
-}
-
-
-//==================================================================
-// NORMAL PIPELINE STATUS
-//==================================================================
-
-void PrintNormalPipelineStatus(
-   const string symbol
-)
-{
-   Print(
-      "------------------------------------------------------------"
-   );
-
-
-   Print(
-      "[NORMAL STATUS] Symbol=",
-      symbol
-   );
-
-
-   Print(
-      "[NORMAL STATUS] H4 Setup=",
-      (
-         g_h4SetupActive
-         ?
-         "ACTIVE"
-         :
-         "INACTIVE"
-      )
-   );
-
-
-   if(
-      g_h4SetupActive
-   )
-   {
-      Print(
-         "[NORMAL STATUS] H4 Direction=",
-         StructureDirectionToString(
-            g_h4SetupDirection
-         )
-      );
-   }
-
-
-   Print(
-      "[NORMAL STATUS] M15=",
-      (
-         g_m15Confirmation.confirmed
-         ?
-         "CONFIRMED"
-         :
-         "WAITING"
-      )
-   );
-
-
-   Print(
-      "[NORMAL STATUS] M5=",
-      (
-         g_m5Confirmation.valid
-         ?
-         "VALID"
-         :
-         "WAITING"
-      )
-   );
-
-
-   Print(
-      "------------------------------------------------------------"
-   );
-}
-
-
-//==================================================================
-// SYMBOL LIST BUILDER
-//==================================================================
-//
-// When enabled, the EA scans symbols currently available in the
-// MT5 Market Watch.
-//
-// This avoids hard-coding only XAUUSD/EURUSD and allows Exness
-// symbol suffixes such as XAUUSDm to be handled automatically.
-//==================================================================
-
-int BuildSymbolList(
-   string &symbols[]
-)
-{
-   ArrayResize(
-      symbols,
-      0
-   );
-
-
-   int total=
-      SymbolsTotal(
-         InpScanMarketWatchSymbols,
-         true
-      );
-
-
-   if(total<=0)
-      return(0);
-
-
-   int count=
-      0;
-
-
-   for(
-      int i=0;
-      i<total;
-      i++
-   )
-   {
-      string symbol=
-         SymbolName(
-            i,
-            InpScanMarketWatchSymbols
-         );
-
-
-      if(symbol=="")
-         continue;
-
-
-      //------------------------------------------------------------
-      // Make sure the symbol can be selected.
-      //------------------------------------------------------------
-
-      if(
-         !SymbolSelect(
-            symbol,
-            true
-         )
-      )
-      {
-         continue;
-      }
-
-
-      //------------------------------------------------------------
-      // Only trade symbols that have a valid trade mode.
-      //------------------------------------------------------------
-
-      if(
-         !IsSymbolTradable(
-            symbol
-         )
-      )
-      {
-         continue;
-      }
-
-
-      //------------------------------------------------------------
-      // Add symbol
-      //------------------------------------------------------------
-
-      ArrayResize(
-         symbols,
-         count+1
-      );
-
-
-      symbols[count]=
-         symbol;
-
-
-      count++;
-   }
-
-
-   return(count);
-}
-
-
-//==================================================================
-// SCALPER SYMBOL PROCESSING
-//==================================================================
-//
-// The scalper operates independently from the H4/M15/M5 normal
-// pipeline.
-//
-// Its primary information source is:
-//
-// M1 closed candles
-//       +
-// short-term tick-pressure proxy
-//       +
-// momentum/rejection
-//       |
-//       v
-// rapid entry / management
-//
-// Risk remains controlled by the same central RiskEngine.
-//==================================================================
-
-bool ProcessScalperSymbol(
-   const string symbol
-)
-{
-   //---------------------------------------------------------------
-   // Mode
-   //---------------------------------------------------------------
-
-   if(
-      InpTradingMode==
-      EA_MODE_NORMAL
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Daily protection
-   //---------------------------------------------------------------
-
-   if(
-      !IsDailyTradingAllowed()
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Symbol
-   //---------------------------------------------------------------
-
-   if(
-      !IsSymbolTradable(
-         symbol
-      )
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Spread
-   //---------------------------------------------------------------
-
-   if(
-      !IsSpreadAcceptable(
-         symbol
-      )
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Generate M1 signal
-   //---------------------------------------------------------------
-
-   M1ScalpSignal signal;
-
-
-   if(
-      !M1_BuildSignal(
-         symbol,
-         signal
-      )
-   )
-   {
-      return(false);
-   }
-
-
-   if(!signal.valid)
-      return(false);
-
-
-   //---------------------------------------------------------------
-   // Score protection
-   //---------------------------------------------------------------
-
-   if(
-      signal.score<
-      InpScalpMinScore
-   )
-   {
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Diagnostic
-   //---------------------------------------------------------------
-
-   Print(
-      "[SCALPER SIGNAL] ",
-      symbol,
-      " | Score=",
-      DoubleToString(
-         signal.score,
+         InpConfirmTF,
          1
-      ),
-      " | Entry=",
-      DoubleToString(
-         signal.entry,
-         (int)SymbolInfoInteger(
-            symbol,
-            SYMBOL_DIGITS
-         )
-      ),
-      " | SL=",
-      DoubleToString(
-         signal.stopLoss,
-         (int)SymbolInfoInteger(
-            symbol,
-            SYMBOL_DIGITS
-         )
-      ),
-      " | TP=",
-      DoubleToString(
-         signal.takeProfit,
-         (int)SymbolInfoInteger(
-            symbol,
-            SYMBOL_DIGITS
-         )
-      ),
-      " | Reason=",
-      signal.reason
-   );
-
-
-   //---------------------------------------------------------------
-   // Send signal to central TradeEngine
-   //---------------------------------------------------------------
-
-   bool processed=
-      TE_ProcessScalp(
-         g_tradeEngine,
-         Trade,
-         symbol,
-         signal,
-         InpRiskPercent,
-         InpMaxTotalRiskPct,
-         InpMagicNumber,
-         InpEnableTrading
       );
 
+   g_m15Confirmation.confirmationShift=1;
 
-   return(processed);
+   g_m15Confirmation.reason=
+      "M15 displacement + structure confirmation";
+
+   return(true);
 }
 
+//+------------------------------------------------------------------+
+//| Build M5 confirmation                                            |
+//+------------------------------------------------------------------+
 
-//==================================================================
-// MANAGE EXISTING SCALPER POSITIONS
-//==================================================================
-//
-// Existing positions continue to be managed even when daily new
-// entries are locked.
-//
-// This is important because a daily lock must stop NEW exposure,
-// not disable emergency exits.
-//==================================================================
+bool BuildM5Confirmation(
+   const string symbol,
+   const ENUM_STRUCTURE_DIRECTION expectedDirection)
+{
+   if(expectedDirection==
+      STRUCTURE_UNKNOWN)
+      return(false);
 
-void ManageScalperPositions(
-   const string symbol
-)
+   if(Bars(
+      symbol,
+      InpEntryTF
+   )<ICT_MIN_HISTORY_BARS)
+      return(false);
+
+   M5Confirmation confirmation;
+
+   if(!M5_BuildConfirmation(
+      symbol,
+      InpEntryTF,
+      expectedDirection,
+      ICT_M5_CONFIRM_MAX_BARS,
+      confirmation))
+   {
+      return(false);
+   }
+
+   if(!confirmation.valid)
+      return(false);
+
+   g_m5Confirmation=
+      confirmation;
+
+   return(true);
+}
+
+//+------------------------------------------------------------------+
+//| Scan normal ICT setup                                            |
+//+------------------------------------------------------------------+
+
+bool ScanNormalSetup(
+   const string symbol)
+{
+   ENUM_STRUCTURE_DIRECTION h4Direction;
+
+   if(!AnalyzeH4Structure(
+      symbol,
+      h4Direction))
+   {
+      g_h4SetupActive=false;
+      return(false);
+   }
+
+   //-----------------------------------------------------------------
+   // Liquidity must exist in the expected context.
+   //-----------------------------------------------------------------
+
+   if(!AnalyzeH4Liquidity(
+      symbol,
+      h4Direction))
+   {
+      g_h4SetupActive=false;
+      return(false);
+   }
+
+   //-----------------------------------------------------------------
+   // FVG context.
+   //-----------------------------------------------------------------
+
+   if(!AnalyzeH4FVG(
+      symbol,
+      h4Direction))
+   {
+      g_h4SetupActive=false;
+      return(false);
+   }
+
+   //-----------------------------------------------------------------
+   // Optional order block context.
+   //-----------------------------------------------------------------
+
+   if(!AnalyzeH4OrderBlock(
+      symbol,
+      h4Direction))
+   {
+      g_h4SetupActive=false;
+      return(false);
+   }
+
+   //-----------------------------------------------------------------
+   // Save H4 setup.
+   //-----------------------------------------------------------------
+
+   g_h4SetupActive=true;
+
+   g_h4SetupDirection=
+      h4Direction;
+
+   g_h4SetupTime=
+      iTime(
+         symbol,
+         InpPrimaryTF,
+         1
+      );
+
+   g_h4SetupShift=1;
+
+   //-----------------------------------------------------------------
+   // M15 confirmation.
+   //-----------------------------------------------------------------
+
+   if(!BuildM15Confirmation(
+      symbol,
+      h4Direction))
+   {
+      return(false);
+   }
+
+   //-----------------------------------------------------------------
+   // M5 confirmation.
+   //-----------------------------------------------------------------
+
+   if(!BuildM5Confirmation(
+      symbol,
+      h4Direction))
+   {
+      return(false);
+   }
+
+   return(true);
+}
+
+//+------------------------------------------------------------------+
+//| Print normal setup                                               |
+//+------------------------------------------------------------------+
+
+void PrintNormalSetup(
+   const string symbol)
+{
+   if(!g_h4SetupActive)
+      return;
+
+   Print(
+      "[ICT SETUP] ",
+      symbol,
+      " | Direction=",
+      EnumToString(
+         g_h4SetupDirection
+      ),
+      " | H4Time=",
+      TimeToString(
+         g_h4SetupTime
+      ),
+      " | M15=",
+      g_m15Confirmation.confirmed,
+      " | M5=",
+      g_m5Confirmation.valid
+   );
+}
+
+//+------------------------------------------------------------------+
+//| Scan one symbol for normal mode                                  |
+//+------------------------------------------------------------------+
+
+void ProcessNormalSymbol(
+   const string symbol)
+{
+   if(!IsSymbolTradable(symbol))
+      return;
+
+   if(!IsSpreadAcceptable(symbol))
+      return;
+
+   if(!ScanNormalSetup(symbol))
+      return;
+
+   PrintNormalSetup(symbol);
+
+   //-----------------------------------------------------------------
+   // The existing normal execution engine remains the authority for
+   // actual order construction/execution.
+   //
+   // During this development build we do not force an order here.
+   // This prevents accidental duplicate execution while the modules
+   // are being validated.
+   //-----------------------------------------------------------------
+
+   if(!IsNewEntryAllowed())
+      return;
+
+   Print(
+      "[ICT] Valid normal setup detected on ",
+      symbol,
+      ". Normal execution remains protected by TradeEngine/RiskEngine."
+   );
+}
+
+//+------------------------------------------------------------------+
+//| Process one scalper symbol                                       |
+//+------------------------------------------------------------------+
+
+void ProcessScalperSymbol(
+   const string symbol)
+{
+   if(!IsSymbolTradable(symbol))
+      return;
+
+   if(!IsSpreadAcceptable(symbol))
+      return;
+
+   if(!IsNewEntryAllowed())
+      return;
+
+   //-----------------------------------------------------------------
+   // TradeEngine handles the complete M1 signal/execution pipeline.
+   //-----------------------------------------------------------------
+
+   TE_ProcessScalp(
+      g_tradeEngine,
+      Trade,
+      symbol,
+      InpRiskPercent,
+      InpMaxTotalRiskPct,
+      InpMagicNumber,
+      InpScalpMinScore,
+      InpScalpMaxHoldSeconds,
+      InpScalpCooldownSeconds,
+      InpScalpMaxPositions,
+      InpScalpMaxSymbolPositions,
+      InpMaxSpreadPts,
+      InpEnableTrading
+   );
+}
+
+//+------------------------------------------------------------------+
+//| Manage existing scalper trades                                   |
+//+------------------------------------------------------------------+
+
+void ManageScalperSymbol(
+   const string symbol)
 {
    TE_ManageScalps(
       g_tradeEngine,
       Trade,
       symbol,
-      InpEnableTrading
+      InpScalpMaxHoldSeconds,
+      InpScalpCooldownSeconds,
+      InpMagicNumber
    );
 }
 
-
-//==================================================================
-// PROCESS ONE SYMBOL
-//==================================================================
+//+------------------------------------------------------------------+
+//| Process one market symbol                                        |
+//+------------------------------------------------------------------+
 
 void ProcessSymbol(
-   const string symbol
-)
+   const string symbol)
 {
    if(symbol=="")
       return;
 
-
-   //---------------------------------------------------------------
-   // Always manage existing scalper positions first.
-   //---------------------------------------------------------------
-
-   if(
-      InpTradingMode==
-      EA_MODE_SCALPER ||
-      InpTradingMode==
-      EA_MODE_AUTO
-   )
-   {
-      ManageScalperPositions(
-         symbol
-      );
-   }
-
-
-   //---------------------------------------------------------------
-   // New entries are disabled by daily protection.
-   //---------------------------------------------------------------
-
-   if(
-      !IsDailyTradingAllowed()
-   )
-   {
+   if(!IsSymbolTradable(symbol))
       return;
-   }
 
-
-   //---------------------------------------------------------------
-   // SCALPER
-   //---------------------------------------------------------------
+   //-----------------------------------------------------------------
+   // Always manage existing scalper positions first.
+   //-----------------------------------------------------------------
 
    if(
       InpTradingMode==
-      EA_MODE_SCALPER ||
+         EA_MODE_SCALPER ||
       InpTradingMode==
-      EA_MODE_AUTO
+         EA_MODE_AUTO
    )
    {
-      ProcessScalperSymbol(
-         symbol
-      );
+      ManageScalperSymbol(symbol);
    }
 
+   //-----------------------------------------------------------------
+   // New entries require all safety permissions.
+   //-----------------------------------------------------------------
 
-   //---------------------------------------------------------------
-   // NORMAL
-   //---------------------------------------------------------------
+   if(!IsNewEntryAllowed())
+      return;
+
+   //-----------------------------------------------------------------
+   // Scalper
+   //-----------------------------------------------------------------
 
    if(
       InpTradingMode==
-      EA_MODE_NORMAL ||
+         EA_MODE_SCALPER ||
       InpTradingMode==
-      EA_MODE_AUTO
+         EA_MODE_AUTO
    )
    {
-      ProcessNormalICTPipeline(
-         symbol
-      );
+      ProcessScalperSymbol(symbol);
+   }
+
+   //-----------------------------------------------------------------
+   // Normal ICT engine
+   //-----------------------------------------------------------------
+
+   if(
+      InpTradingMode==
+         EA_MODE_NORMAL ||
+      InpTradingMode==
+         EA_MODE_AUTO
+   )
+   {
+      ProcessNormalSymbol(symbol);
    }
 }
 
+//+------------------------------------------------------------------+
+//| Scan Market Watch                                                |
+//+------------------------------------------------------------------+
 
-//==================================================================
-// SCAN ALL MARKET WATCH SYMBOLS
-//==================================================================
-
-void ScanMarket()
+void ScanMarketWatch()
 {
-   string symbols[];
-
-
-   int count=
-      BuildSymbolList(
-         symbols
+   int total=
+      SymbolsTotal(
+         true
       );
 
+   for(int i=0;i<total;i++)
+   {
+      string symbol=
+         SymbolName(
+            i,
+            true
+         );
 
-   if(count<=0)
+      if(symbol=="")
+         continue;
+
+      ProcessSymbol(symbol);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Scan current chart symbol                                       |
+//+------------------------------------------------------------------+
+
+void ScanCurrentSymbol()
+{
+   string symbol=
+      _Symbol;
+
+   if(symbol=="")
+      return;
+
+   ProcessSymbol(symbol);
+}
+
+//+------------------------------------------------------------------+
+//| Expert initialization                                            |
+//+------------------------------------------------------------------+
+
+int OnInit()
+{
+   //-----------------------------------------------------------------
+   // Trade object configuration
+   //-----------------------------------------------------------------
+
+   Trade.SetExpertMagicNumber(
+      InpMagicNumber
+   );
+
+   Trade.SetDeviationInPoints(
+      InpDeviationPts
+   );
+
+   //-----------------------------------------------------------------
+   // State initialization
+   //-----------------------------------------------------------------
+
+   g_lastPrimaryBar=0;
+   g_lastConfirmBar=0;
+   g_lastEntryBar=0;
+   g_lastScalpEntryTime=0;
+
+   g_h4SetupActive=false;
+   g_h4SetupDirection=
+      STRUCTURE_UNKNOWN;
+
+   g_h4SetupTime=0;
+   g_h4SetupShift=-1;
+
+   ResetM15Confirmation(
+      g_m15Confirmation
+   );
+
+   //-----------------------------------------------------------------
+   // Daily state
+   //-----------------------------------------------------------------
+
+   g_dayStart=
+      GetDayStart();
+
+   g_dayStartEquity=
+      AccountInfoDouble(
+         ACCOUNT_EQUITY
+      );
+
+   g_dailyLocked=false;
+
+   //-----------------------------------------------------------------
+   // Trade engine
+   //-----------------------------------------------------------------
+
+   TE_Init(
+      g_tradeEngine,
+      InpMagicNumber,
+      InpTradingMode==EA_MODE_NORMAL,
+      InpTradingMode==EA_MODE_SCALPER,
+      InpTradingMode==EA_MODE_AUTO
+   );
+
+   //-----------------------------------------------------------------
+   // Growth controller
+   //-----------------------------------------------------------------
+
+   if(!InitializeGrowthController())
    {
       Print(
-         "[SCAN] No tradable Market Watch symbols found."
+         "[GROWTH] Initialization failed."
       );
 
-
-      return;
+      return(INIT_FAILED);
    }
 
-
-   //---------------------------------------------------------------
-   // Scan each symbol
-   //---------------------------------------------------------------
-
-   for(
-      int i=0;
-      i<count;
-      i++
-   )
-   {
-      ProcessSymbol(
-         symbols[i]
-      );
-   }
-}
-
-
-//==================================================================
-// RISK STATUS
-//==================================================================
-
-void PrintRiskStatus()
-{
-   double equity=
-      RE_GetEquity();
-
-
-   double riskPercent=
-      RE_GetRiskPercent(
-         InpRiskPercent
-      );
-
-
-   double riskMoney=
-      RE_GetRiskMoney(
-         InpRiskPercent
-      );
-
-
-   double openRiskMoney=
-      RE_GetOpenRiskMoney(
-         InpMagicNumber
-      );
-
-
-   double openRiskPercent=
-      RE_GetOpenRiskPercent(
-         InpMagicNumber
-      );
-
+   //-----------------------------------------------------------------
+   // Status
+   //-----------------------------------------------------------------
 
    Print(
-      "[RISK] Equity=",
-      DoubleToString(
-         equity,
-         2
-      ),
-      " | ConfigRisk=",
-      DoubleToString(
-         riskPercent,
-         2
-      ),
-      "%",
-      " | RiskMoney=",
-      DoubleToString(
-         riskMoney,
-         2
-      ),
-      " | OpenRisk=",
-      DoubleToString(
-         openRiskMoney,
-         2
-      ),
-      " (",
-      DoubleToString(
-         openRiskPercent,
-         2
-      ),
-      "%)"
-   );
-}
-
-
-//==================================================================
-// MODE STATUS
-//==================================================================
-
-string TradingModeToString()
-{
-   switch(InpTradingMode)
-   {
-      case EA_MODE_NORMAL:
-         return("NORMAL");
-
-      case EA_MODE_SCALPER:
-         return("SCALPER");
-
-      case EA_MODE_AUTO:
-         return("AUTO");
-   }
-
-
-   return("UNKNOWN");
-}
-
-
-//==================================================================
-// PRINT EA STATUS
-//==================================================================
-
-void PrintEAStatus()
-{
-   Print(
-      "============================================================"
+      "=================================================="
    );
 
-
    Print(
-      "EXNESS ICT EA STATUS"
+      "Exness ICT EA initialized"
    );
 
-
    Print(
-      "Mode=",
-      TradingModeToString()
+      "Symbol: ",
+      _Symbol
    );
 
-
    Print(
-      "Trading=",
-      (
-         InpEnableTrading
-         ?
-         "ENABLED"
-         :
-         "DISABLED"
-      )
-   );
-
-
-   Print(
-      "Primary TF=",
+      "Mode: ",
       EnumToString(
-         InpPrimaryTF
+         InpTradingMode
       )
    );
 
-
    Print(
-      "Confirm TF=",
-      EnumToString(
-         InpConfirmTF
-      )
+      "Trading enabled: ",
+      InpEnableTrading
    );
 
-
    Print(
-      "Entry TF=",
-      EnumToString(
-         InpEntryTF
-      )
-   );
-
-
-   Print(
-      "Risk/trade=",
+      "Risk: ",
       DoubleToString(
          InpRiskPercent,
          2
@@ -2484,9 +1320,8 @@ void PrintEAStatus()
       "%"
    );
 
-
    Print(
-      "Max total open risk=",
+      "Max total risk: ",
       DoubleToString(
          InpMaxTotalRiskPct,
          2
@@ -2494,9 +1329,8 @@ void PrintEAStatus()
       "%"
    );
 
-
    Print(
-      "Daily loss lock=",
+      "Daily loss limit: ",
       DoubleToString(
          InpDailyLossLimitPct,
          2
@@ -2504,858 +1338,84 @@ void PrintEAStatus()
       "%"
    );
 
-
    Print(
-      "Daily profit target=",
-      DoubleToString(
-         InpDailyProfitTargetMoney,
-         2
-      )
+      "=================================================="
    );
 
-
-   Print(
-      "Magic=",
-      (string)InpMagicNumber
-   );
-
-
-   Print(
-      "============================================================"
-   );
+   return(INIT_SUCCEEDED);
 }
-
-
-//==================================================================
-// INITIALIZE DAILY STATE
-//==================================================================
-
-void InitializeDailyState()
-{
-   g_dayStart=
-      GetDayStart();
-
-
-   g_dayStartEquity=
-      AccountInfoDouble(
-         ACCOUNT_EQUITY
-      );
-
-
-   g_dailyLocked=
-      false;
-
-
-   Print(
-      "[DAILY] Start equity=",
-      DoubleToString(
-         g_dayStartEquity,
-         2
-      )
-   );
-}
-
-
-//==================================================================
-// INITIALIZE TRADE ENGINE
-//==================================================================
-
-bool InitializeTradeEngine()
-{
-   TE_ResetState(
-      g_tradeEngine
-   );
-
-
-   bool initialized=
-      TE_Initialize(
-         g_tradeEngine,
-         InpMagicNumber
-      );
-
-
-   if(!initialized)
-   {
-      Print(
-         "[ERROR] TradeEngine initialization failed."
-      );
-
-
-      return(false);
-   }
-
-
-   return(true);
-}
-//==================================================================
-// NEW BAR DETECTION
-//==================================================================
-//
-// The EA does not need to wait for a new bar for scalper position
-// management. Existing positions are managed on every tick.
-//
-// New-bar detection is used for the structural H4/M15/M5 pipeline
-// so the same structural signal is not repeatedly processed on
-// every tick.
-//==================================================================
-
-bool IsNewBar(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   datetime &lastBarTime
-)
-{
-   datetime currentBarTime=
-      iTime(
-         symbol,
-         timeframe,
-         0
-      );
-
-
-   if(currentBarTime<=0)
-      return(false);
-
-
-   if(
-      lastBarTime==
-      0
-   )
-   {
-      lastBarTime=
-         currentBarTime;
-
-      return(true);
-   }
-
-
-   if(
-      currentBarTime!=
-      lastBarTime
-   )
-   {
-      lastBarTime=
-         currentBarTime;
-
-      return(true);
-   }
-
-
-   return(false);
-}
-
-
-//==================================================================
-// STRUCTURAL SCAN TIMER
-//==================================================================
-//
-// The normal ICT pipeline is evaluated when a new H4 candle appears.
-// M15/M5 confirmation is still checked when their respective bars
-// change, while the scalper continues reacting on every tick.
-//==================================================================
-
-void ProcessNormalOnNewStructureBar(
-   const string symbol
-)
-{
-   if(
-      InpTradingMode==
-      EA_MODE_SCALPER
-   )
-   {
-      return;
-   }
-
-
-   //---------------------------------------------------------------
-   // H4 new bar
-   //---------------------------------------------------------------
-
-   bool newH4=
-      IsNewBar(
-         symbol,
-         InpPrimaryTF,
-         g_lastPrimaryBar
-      );
-
-
-   //---------------------------------------------------------------
-   // M15 new bar
-   //---------------------------------------------------------------
-
-   bool newM15=
-      IsNewBar(
-         symbol,
-         InpConfirmTF,
-         g_lastConfirmBar
-      );
-
-
-   //---------------------------------------------------------------
-   // M5 new bar
-   //---------------------------------------------------------------
-
-   bool newM5=
-      IsNewBar(
-         symbol,
-         InpEntryTF,
-         g_lastEntryBar
-      );
-
-
-   //---------------------------------------------------------------
-   // H4 creates/rebuilds the primary setup.
-   //---------------------------------------------------------------
-
-   if(newH4)
-   {
-      g_h4SetupActive=
-         false;
-
-      g_h4SetupDirection=
-         STRUCTURE_UNKNOWN;
-
-      g_h4SetupTime=
-         0;
-
-      g_h4SetupShift=
-         -1;
-
-      ResetM15Confirmation(
-         g_m15Confirmation
-      );
-
-      ResetM5Confirmation(
-         g_m5Confirmation
-      );
-
-
-      BuildH4Setup(
-         symbol
-      );
-   }
-
-
-   //---------------------------------------------------------------
-   // If no H4 setup exists, there is nothing to confirm.
-   //---------------------------------------------------------------
-
-   if(!g_h4SetupActive)
-   {
-      return;
-   }
-
-
-   //---------------------------------------------------------------
-   // M15 confirmation.
-   //
-   // It is allowed to refresh on each new M15 candle.
-   //---------------------------------------------------------------
-
-   if(newM15)
-   {
-      AnalyzeM15Confirmation(
-         symbol,
-         g_h4SetupDirection,
-         g_m15Confirmation
-      );
-   }
-
-
-   //---------------------------------------------------------------
-   // M5 confirmation.
-   //
-   // Only check M5 when M15 has already confirmed.
-   //---------------------------------------------------------------
-
-   if(
-      g_m15Confirmation.confirmed &&
-      newM5
-   )
-   {
-      AnalyzeM5ExecutionConfirmation(
-         symbol,
-         g_h4SetupDirection
-      );
-   }
-
-
-   //---------------------------------------------------------------
-   // Complete structural confirmation.
-   //---------------------------------------------------------------
-
-   if(
-      g_m15Confirmation.confirmed &&
-      g_m5Confirmation.valid
-   )
-   {
-      Print(
-         "[ICT EXECUTION] Structural signal ready | ",
-         symbol,
-         " | Direction=",
-         StructureDirectionToString(
-            g_h4SetupDirection
-         )
-      );
-
-
-      //------------------------------------------------------------
-      // IMPORTANT:
-      //
-      // The current build completes the structural confirmation
-      // pipeline but does not bypass the dedicated execution/risk
-      // engine with a raw market order.
-      //
-      // This prevents the H4/M15/M5 analysis layer from opening
-      // uncontrolled positions.
-      //------------------------------------------------------------
-   }
-}
-
-
-//==================================================================
-// MANAGE ALL OPEN SCALPER POSITIONS
-//==================================================================
-//
-// Position management must continue even when:
-//
-// - new entries are disabled
-// - daily loss protection is active
-// - a new signal is not present
-//
-// The execution module handles the actual exit conditions.
-//==================================================================
-
-void ManageAllScalperPositions()
-{
-   if(
-      InpTradingMode==
-      EA_MODE_NORMAL
-   )
-   {
-      return;
-   }
-
-
-   string symbols[];
-
-
-   int count=
-      BuildSymbolList(
-         symbols
-      );
-
-
-   if(count<=0)
-      return;
-
-
-   for(
-      int i=0;
-      i<count;
-      i++
-   )
-   {
-      ManageScalperPositions(
-         symbols[i]
-      );
-   }
-}
-
-
-//==================================================================
-// SCALPER SCAN
-//==================================================================
-//
-// Scalper signals are processed on every tick. M1_BuildSignal()
-// internally uses closed M1 candles plus its short-term pressure
-// measurement.
-//==================================================================
-
-void ScanScalperMarket()
-{
-   if(
-      InpTradingMode==
-      EA_MODE_NORMAL
-   )
-   {
-      return;
-   }
-
-
-   string symbols[];
-
-
-   int count=
-      BuildSymbolList(
-         symbols
-      );
-
-
-   if(count<=0)
-      return;
-
-
-   for(
-      int i=0;
-      i<count;
-      i++
-   )
-   {
-      ProcessScalperSymbol(
-         symbols[i]
-      );
-   }
-}
-
-
-//==================================================================
-// NORMAL STRUCTURAL SCAN
-//==================================================================
-
-void ScanNormalMarket()
-{
-   if(
-      InpTradingMode==
-      EA_MODE_SCALPER
-   )
-   {
-      return;
-   }
-
-
-   string symbols[];
-
-
-   int count=
-      BuildSymbolList(
-         symbols
-      );
-
-
-   if(count<=0)
-      return;
-
-
-   for(
-      int i=0;
-      i<count;
-      i++
-   )
-   {
-      ProcessNormalOnNewStructureBar(
-         symbols[i]
-      );
-   }
-}
-
-
-//==================================================================
-// ACCOUNT / BROKER INFORMATION
-//==================================================================
-
-void PrintAccountInformation()
-{
-   double balance=
-      AccountInfoDouble(
-         ACCOUNT_BALANCE
-      );
-
-
-   double equity=
-      AccountInfoDouble(
-         ACCOUNT_EQUITY
-      );
-
-
-   double freeMargin=
-      AccountInfoDouble(
-         ACCOUNT_MARGIN_FREE
-      );
-
-
-   long leverage=
-      AccountInfoInteger(
-         ACCOUNT_LEVERAGE
-      );
-
-
-   Print(
-      "[ACCOUNT] Balance=",
-      DoubleToString(
-         balance,
-         2
-      ),
-      " | Equity=",
-      DoubleToString(
-         equity,
-         2
-      ),
-      " | FreeMargin=",
-      DoubleToString(
-         freeMargin,
-         2
-      ),
-      " | Leverage=1:",
-      (string)leverage
-   );
-}
-
-
-//==================================================================
-// BROKER SYMBOL INFORMATION
-//==================================================================
-
-void PrintCurrentSymbolInformation(
-   const string symbol
-)
-{
-   if(symbol=="")
-      return;
-
-
-   double point=
-      SymbolInfoDouble(
-         symbol,
-         SYMBOL_POINT
-      );
-
-
-   int digits=
-      (int)SymbolInfoInteger(
-         symbol,
-         SYMBOL_DIGITS
-      );
-
-
-   double volumeMin=
-      SymbolInfoDouble(
-         symbol,
-         SYMBOL_VOLUME_MIN
-      );
-
-
-   double volumeMax=
-      SymbolInfoDouble(
-         symbol,
-         SYMBOL_VOLUME_MAX
-      );
-
-
-   double volumeStep=
-      SymbolInfoDouble(
-         symbol,
-         SYMBOL_VOLUME_STEP
-      );
-
-
-   long spread=
-      0;
-
-
-   SymbolInfoInteger(
-      symbol,
-      SYMBOL_SPREAD,
-      spread
-   );
-
-
-   Print(
-      "[SYMBOL] ",
-      symbol,
-      " | Digits=",
-      digits,
-      " | Point=",
-      DoubleToString(
-         point,
-         digits
-      ),
-      " | MinLot=",
-      DoubleToString(
-         volumeMin,
-         4
-      ),
-      " | MaxLot=",
-      DoubleToString(
-         volumeMax,
-         4
-      ),
-      " | LotStep=",
-      DoubleToString(
-         volumeStep,
-         4
-      ),
-      " | SpreadPts=",
-      (string)spread
-   );
-}
-
-
-//==================================================================
-// ON INIT
-//==================================================================
-
-int OnInit()
-{
-   //---------------------------------------------------------------
-   // Reset global state
-   //---------------------------------------------------------------
-
-   g_lastPrimaryBar=
-      0;
-
-   g_lastConfirmBar=
-      0;
-
-   g_lastEntryBar=
-      0;
-
-
-   g_h4SetupActive=
-      false;
-
-   g_h4SetupDirection=
-      STRUCTURE_UNKNOWN;
-
-   g_h4SetupTime=
-      0;
-
-   g_h4SetupShift=
-      -1;
-
-
-   ResetM15Confirmation(
-      g_m15Confirmation
-   );
-
-
-   ResetM5Confirmation(
-      g_m5Confirmation
-   );
-
-
-   //---------------------------------------------------------------
-   // Configure CTrade
-   //---------------------------------------------------------------
-
-   Trade.SetExpertMagicNumber(
-      InpMagicNumber
-   );
-
-
-   Trade.SetDeviationInPoints(
-      InpDeviationPts
-   );
-
-
-   //---------------------------------------------------------------
-   // Initialize daily protection
-   //---------------------------------------------------------------
-
-   InitializeDailyState();
-
-
-   //---------------------------------------------------------------
-   // Initialize TradeEngine
-   //---------------------------------------------------------------
-
-   if(
-      !InitializeTradeEngine()
-   )
-   {
-      return(
-         INIT_FAILED
-      );
-   }
-
-
-   //---------------------------------------------------------------
-   // Print startup information
-   //---------------------------------------------------------------
-
-   Print(
-      "============================================================"
-   );
-
-
-   Print(
-      "EXNESS ICT EA INITIALIZING"
-   );
-
-
-   PrintEAStatus();
-
-
-   PrintAccountInformation();
-
-
-   //---------------------------------------------------------------
-   // Current chart symbol information
-   //---------------------------------------------------------------
-
-   PrintCurrentSymbolInformation(
-      _Symbol
-   );
-
-
-   //---------------------------------------------------------------
-   // Risk summary
-   //---------------------------------------------------------------
-
-   RE_PrintSummary(
-      _Symbol,
-      InpRiskPercent,
-      InpMagicNumber
-   );
-
-
-   //---------------------------------------------------------------
-   // Safety reminder
-   //---------------------------------------------------------------
-
-   if(!InpEnableTrading)
-   {
-      Print(
-         "[SAFETY] LIVE ORDER EXECUTION IS DISABLED."
-      );
-   }
-   else
-   {
-      Print(
-         "[WARNING] LIVE ORDER EXECUTION IS ENABLED."
-      );
-   }
-
-
-   //---------------------------------------------------------------
-   // Mode
-   //---------------------------------------------------------------
-
-   Print(
-      "[MODE] ",
-      TradingModeToString()
-   );
-
-
-   Print(
-      "EXNESS ICT EA INITIALIZED"
-   );
-
-
-   Print(
-      "============================================================"
-   );
-
-
-   return(
-      INIT_SUCCEEDED
-   );
-}
-
-
-//==================================================================
-// ON DEINIT
-//==================================================================
-
-void OnDeinit(
-   const int reason
-)
-{
-   Print(
-      "============================================================"
-   );
-
-
-   Print(
-      "EXNESS ICT EA DEINITIALIZING"
-   );
-
-
-   Print(
-      "Reason=",
-      (string)reason
-   );
-
-
-   //---------------------------------------------------------------
-   // Print final risk state
-   //---------------------------------------------------------------
-
-   PrintRiskStatus();
-
-
-   //---------------------------------------------------------------
-   // Reset state
-   //---------------------------------------------------------------
-
-   TE_ResetState(
-      g_tradeEngine
-   );
-
-
-   Print(
-      "EXNESS ICT EA DEINITIALIZED"
-   );
-
-
-   Print(
-      "============================================================"
-   );
-}
-
-
-//==================================================================
-// ON TICK
-//==================================================================
-
-void OnTick()
-{
-   //---------------------------------------------------------------
-   // Update daily protection first.
-   //---------------------------------------------------------------
-
-   UpdateDailyState();
-
-
-   //---------------------------------------------------------------
-   // Existing scalper positions must always be managed.
-   //---------------------------------------------------------------
-
-   ManageAllScalperPositions();
-
-
-   //---------------------------------------------------------------
-   // Normal structural pipeline.
-   //
-   // This checks only when relevant timeframe bars change.
-   //---------------------------------------------------------------
-
-   ScanNormalMarket();
-
-
-   //---------------------------------------------------------------
-   // New scalper signals.
-   //
-   // The scalper is allowed to evaluate every tick.
-   //---------------------------------------------------------------
-
-   if(
-      InpTradingMode==
-      EA_MODE_SCALPER ||
-      InpTradingMode==
-      EA_MODE_AUTO
-   )
-   {
-      if(
-         IsDailyTradingAllowed()
-      )
-      {
-         ScanScalperMarket();
-      }
-   }
-}
-
 
 //+------------------------------------------------------------------+
-//| END OF FILE                                                       |
+//| Expert deinitialization                                          |
+//+------------------------------------------------------------------+
+
+void OnDeinit(
+   const int reason)
+{
+   Print(
+      "[EA] Deinitialized. Reason=",
+      reason
+   );
+}
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   //-----------------------------------------------------------------
+   // Update protection systems on every tick.
+   //-----------------------------------------------------------------
+
+   UpdateDailyState();
+   UpdateGrowthController();
+
+   //-----------------------------------------------------------------
+   // Manage existing scalper positions even when new entries are
+   // disabled. This allows emergency/normal exit management to run.
+   //-----------------------------------------------------------------
+
+   if(
+      InpTradingMode==EA_MODE_SCALPER ||
+      InpTradingMode==EA_MODE_AUTO
+   )
+   {
+      if(InpScanMarketWatchSymbols)
+         ScanMarketWatch();
+      else
+         ManageScalperSymbol(_Symbol);
+   }
+
+   //-----------------------------------------------------------------
+   // No new trades when trading is disabled.
+   //-----------------------------------------------------------------
+
+   if(!InpEnableTrading)
+      return;
+
+   //-----------------------------------------------------------------
+   // Daily safety lock.
+   //-----------------------------------------------------------------
+
+   if(!IsDailyTradingAllowed())
+      return;
+
+   //-----------------------------------------------------------------
+   // Growth target reached.
+   //-----------------------------------------------------------------
+
+   if(!IsGrowthTradingAllowed())
+      return;
+
+   //-----------------------------------------------------------------
+   // Market scanning.
+   //-----------------------------------------------------------------
+
+   if(InpScanMarketWatchSymbols)
+      ScanMarketWatch();
+   else
+      ScanCurrentSymbol();
+}
+
+//+------------------------------------------------------------------+
+//| End of EA                                                        |
 //+------------------------------------------------------------------+
