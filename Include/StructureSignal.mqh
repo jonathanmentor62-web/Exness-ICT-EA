@@ -1,9 +1,9 @@
 //+------------------------------------------------------------------+
 //| StructureSignal.mqh                                              |
-//| ICT market-structure and displacement signal detection          |
+//| Gold Multi-Strategy EA - Structure, MSS, BOS & Displacement     |
 //+------------------------------------------------------------------+
-#ifndef __EXNESS_ICT_STRUCTURE_SIGNAL_MQH__
-#define __EXNESS_ICT_STRUCTURE_SIGNAL_MQH__
+#ifndef __EXNESS_GOLD_STRUCTURE_SIGNAL_MQH__
+#define __EXNESS_GOLD_STRUCTURE_SIGNAL_MQH__
 
 #include "MarketStructure.mqh"
 
@@ -14,8 +14,10 @@
 enum ENUM_STRUCTURE_EVENT
 {
    STRUCTURE_EVENT_NONE = 0,
+
    STRUCTURE_EVENT_BULLISH_MSS,
    STRUCTURE_EVENT_BEARISH_MSS,
+
    STRUCTURE_EVENT_BULLISH_BOS,
    STRUCTURE_EVENT_BEARISH_BOS
 };
@@ -27,44 +29,50 @@ enum ENUM_STRUCTURE_EVENT
 
 struct StructureSignal
 {
-   bool     valid;
+   bool valid;
 
-   // Directional displacement.
-   bool     bullishDisplacement;
-   bool     bearishDisplacement;
+   // Direction.
+   int direction;
 
-   // Market Structure Shift.
-   bool     bullishMSS;
-   bool     bearishMSS;
+   // Candle characteristics.
+   bool bullishDisplacement;
+   bool bearishDisplacement;
 
-   // Break of Structure.
-   bool     bullishBOS;
-   bool     bearishBOS;
+   // Structure events.
+   bool bullishMSS;
+   bool bearishMSS;
 
-   // Detected event.
+   bool bullishBOS;
+   bool bearishBOS;
+
    ENUM_STRUCTURE_EVENT event;
 
-   // Structure before the break.
-   int      previousStructure;
+   // Structure before the signal.
+   int previousStructure;
 
-   // Price level that was broken.
-   double   brokenLevel;
+   // Broken structure level.
+   double brokenLevel;
 
-   // Time of the signal candle.
+   // Signal candle.
    datetime signalTime;
+   int signalShift;
 
-   // Shift of the signal candle.
-   int      signalShift;
+   // Strength measurements.
+   double candleRange;
+   double candleBody;
+   double bodyRatio;
 };
 
 
 //====================================================================
-// SIGNAL RESET
+// RESET
 //====================================================================
 
 void ResetStructureSignal(StructureSignal &signal)
 {
    signal.valid = false;
+
+   signal.direction = 0;
 
    signal.bullishDisplacement = false;
    signal.bearishDisplacement = false;
@@ -82,16 +90,18 @@ void ResetStructureSignal(StructureSignal &signal)
    signal.brokenLevel = 0.0;
 
    signal.signalTime = 0;
-
    signal.signalShift = -1;
+
+   signal.candleRange = 0.0;
+   signal.candleBody = 0.0;
+   signal.bodyRatio = 0.0;
 }
 
 
 //====================================================================
-// CANDLE HELPERS
+// CANDLE DATA
 //====================================================================
 
-// Candle range.
 double SS_CandleRange(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -101,11 +111,13 @@ double SS_CandleRange(
    double high = iHigh(symbol, timeframe, shift);
    double low  = iLow(symbol, timeframe, shift);
 
+   if(high <= 0.0 || low <= 0.0 || high < low)
+      return 0.0;
+
    return high - low;
 }
 
 
-// Candle body.
 double SS_CandleBody(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -115,15 +127,13 @@ double SS_CandleBody(
    double open  = iOpen(symbol, timeframe, shift);
    double close = iClose(symbol, timeframe, shift);
 
+   if(open <= 0.0 || close <= 0.0)
+      return 0.0;
+
    return MathAbs(close - open);
 }
 
 
-// Candle direction.
-//
-//  1 = bullish
-// -1 = bearish
-//  0 = neutral/doji
 int SS_CandleDirection(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -147,12 +157,6 @@ int SS_CandleDirection(
 // DISPLACEMENT
 //====================================================================
 
-// Generic displacement check.
-//
-// A displacement candle must have:
-// - valid range
-// - sufficiently large body relative to range
-// - directional candle
 bool IsDisplacementCandle(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -180,14 +184,10 @@ bool IsDisplacementCandle(
 
    double ratio = body / range;
 
-   if(ratio < minimumBodyRatio)
-      return false;
-
-   return true;
+   return ratio >= minimumBodyRatio;
 }
 
 
-// Bullish displacement.
 bool IsBullishDisplacement(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -213,7 +213,6 @@ bool IsBullishDisplacement(
 }
 
 
-// Bearish displacement.
 bool IsBearishDisplacement(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -243,14 +242,6 @@ bool IsBearishDisplacement(
 // PRE-SIGNAL STRUCTURE
 //====================================================================
 
-// Determine the market structure immediately before the signal.
-//
-//  1 = bullish
-// -1 = bearish
-//  0 = neutral
-//
-// This is intentionally based on the confirmed swing structure
-// BEFORE the signal candle, not on the signal candle itself.
 int GetPreSignalStructure(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -262,6 +253,7 @@ int GetPreSignalStructure(
 {
    SwingPoint recentHigh;
    SwingPoint previousHigh;
+
    SwingPoint recentLow;
    SwingPoint previousLow;
 
@@ -305,24 +297,21 @@ int GetPreSignalStructure(
          previousLow
       );
 
-   bool bullishStructure = false;
-   bool bearishStructure = false;
+   if(!haveHighs || !haveLows)
+      return 0;
 
-   if(haveHighs && haveLows)
-   {
-      bullishStructure =
-         recentHigh.price > previousHigh.price &&
-         recentLow.price  > previousLow.price;
+   bool bullish =
+      recentHigh.price > previousHigh.price &&
+      recentLow.price  > previousLow.price;
 
-      bearishStructure =
-         recentHigh.price < previousHigh.price &&
-         recentLow.price  < previousLow.price;
-   }
+   bool bearish =
+      recentHigh.price < previousHigh.price &&
+      recentLow.price  < previousLow.price;
 
-   if(bullishStructure)
+   if(bullish)
       return 1;
 
-   if(bearishStructure)
+   if(bearish)
       return -1;
 
    return 0;
@@ -330,12 +319,9 @@ int GetPreSignalStructure(
 
 
 //====================================================================
-// BULLISH STRUCTURE BREAK
+// BULLISH BREAK
 //====================================================================
 
-// Detect a bullish break of the latest confirmed swing high.
-//
-// A bullish close above the swing high is required.
 bool DetectBullishStructureBreak(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -362,16 +348,12 @@ bool DetectBullishStructureBreak(
       return false;
    }
 
-   // Do not allow the signal candle itself to be used as the
-   // swing candle.
+   // The swing must be older than the signal candle.
    if(swingHigh.shift <= signalShift)
       return false;
 
    double closePrice =
       iClose(symbol, timeframe, signalShift);
-
-   if(closePrice <= 0.0)
-      return false;
 
    if(closePrice <= swingHigh.price)
       return false;
@@ -383,10 +365,9 @@ bool DetectBullishStructureBreak(
 
 
 //====================================================================
-// BEARISH STRUCTURE BREAK
+// BEARISH BREAK
 //====================================================================
 
-// Detect a bearish break of the latest confirmed swing low.
 bool DetectBearishStructureBreak(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -413,16 +394,11 @@ bool DetectBearishStructureBreak(
       return false;
    }
 
-   // Do not allow the signal candle itself to be used as the
-   // swing candle.
    if(swingLow.shift <= signalShift)
       return false;
 
    double closePrice =
       iClose(symbol, timeframe, signalShift);
-
-   if(closePrice <= 0.0)
-      return false;
 
    if(closePrice >= swingLow.price)
       return false;
@@ -434,7 +410,7 @@ bool DetectBearishStructureBreak(
 
 
 //====================================================================
-// MAIN STRUCTURE ANALYSIS
+// MAIN ANALYSIS
 //====================================================================
 
 bool AnalyzeStructureSignal(
@@ -455,14 +431,38 @@ bool AnalyzeStructureSignal(
 
    int bars = Bars(symbol, timeframe);
 
-   if(bars <= 0)
+   if(bars <= signalShift)
       return false;
 
-   if(signalShift >= bars)
-      return false;
 
    // ---------------------------------------------------------------
-   // Step 1: Detect displacement.
+   // Candle measurements
+   // ---------------------------------------------------------------
+
+   signal.candleRange =
+      SS_CandleRange(
+         symbol,
+         timeframe,
+         signalShift
+      );
+
+   signal.candleBody =
+      SS_CandleBody(
+         symbol,
+         timeframe,
+         signalShift
+      );
+
+   if(signal.candleRange <= 0.0)
+      return false;
+
+   signal.bodyRatio =
+      signal.candleBody /
+      signal.candleRange;
+
+
+   // ---------------------------------------------------------------
+   // Displacement
    // ---------------------------------------------------------------
 
    signal.bullishDisplacement =
@@ -481,18 +481,9 @@ bool AnalyzeStructureSignal(
          minimumBodyRatio
       );
 
-   // No displacement = no ICT structure signal.
-   if(
-      !signal.bullishDisplacement &&
-      !signal.bearishDisplacement
-   )
-   {
-      return false;
-   }
-
 
    // ---------------------------------------------------------------
-   // Step 2: Determine structure before the break.
+   // Structure before signal
    // ---------------------------------------------------------------
 
    signal.previousStructure =
@@ -507,10 +498,11 @@ bool AnalyzeStructureSignal(
 
 
    // ---------------------------------------------------------------
-   // Step 3: Detect bullish break.
+   // Structure breaks
    // ---------------------------------------------------------------
 
    double bullishBrokenLevel = 0.0;
+   double bearishBrokenLevel = 0.0;
 
    bool bullishBreak =
       DetectBullishStructureBreak(
@@ -522,13 +514,6 @@ bool AnalyzeStructureSignal(
          rightBars,
          bullishBrokenLevel
       );
-
-
-   // ---------------------------------------------------------------
-   // Step 4: Detect bearish break.
-   // ---------------------------------------------------------------
-
-   double bearishBrokenLevel = 0.0;
 
    bool bearishBreak =
       DetectBearishStructureBreak(
@@ -543,64 +528,60 @@ bool AnalyzeStructureSignal(
 
 
    // ---------------------------------------------------------------
-   // Step 5: Require directional agreement.
-   //
-   // Bullish displacement must break upward.
-   // Bearish displacement must break downward.
+   // Bullish signal
    // ---------------------------------------------------------------
 
-   bool bullishSignal =
+   if(
       signal.bullishDisplacement &&
-      bullishBreak;
-
-   bool bearishSignal =
-      signal.bearishDisplacement &&
-      bearishBreak;
-
-
-   // ---------------------------------------------------------------
-   // Step 6: Classify MSS vs BOS.
-   //
-   // MSS:
-   //   break against the existing structure.
-   //
-   // BOS:
-   //   break in the direction of the existing structure.
-   //
-   // If structure is neutral/unclear, classify the directional
-   // structure break as BOS rather than inventing an MSS.
-   // ---------------------------------------------------------------
-
-   if(bullishSignal)
+      bullishBreak
+   )
    {
+      signal.direction = 1;
       signal.brokenLevel = bullishBrokenLevel;
 
+      // Break against bearish structure = MSS.
       if(signal.previousStructure < 0)
       {
          signal.bullishMSS = true;
-         signal.event = STRUCTURE_EVENT_BULLISH_MSS;
+         signal.event =
+            STRUCTURE_EVENT_BULLISH_MSS;
       }
       else
       {
          signal.bullishBOS = true;
-         signal.event = STRUCTURE_EVENT_BULLISH_BOS;
+         signal.event =
+            STRUCTURE_EVENT_BULLISH_BOS;
       }
    }
-   else if(bearishSignal)
+
+
+   // ---------------------------------------------------------------
+   // Bearish signal
+   // ---------------------------------------------------------------
+
+   else if(
+      signal.bearishDisplacement &&
+      bearishBreak
+   )
    {
+      signal.direction = -1;
       signal.brokenLevel = bearishBrokenLevel;
 
+      // Break against bullish structure = MSS.
       if(signal.previousStructure > 0)
       {
          signal.bearishMSS = true;
-         signal.event = STRUCTURE_EVENT_BEARISH_MSS;
+         signal.event =
+            STRUCTURE_EVENT_BEARISH_MSS;
       }
       else
       {
          signal.bearishBOS = true;
-         signal.event = STRUCTURE_EVENT_BEARISH_BOS;
+         signal.event =
+            STRUCTURE_EVENT_BEARISH_BOS;
       }
    }
+
    else
    {
       return false;
@@ -608,7 +589,7 @@ bool AnalyzeStructureSignal(
 
 
    // ---------------------------------------------------------------
-   // Step 7: Store signal metadata.
+   // Metadata
    // ---------------------------------------------------------------
 
    signal.signalShift = signalShift;
@@ -627,30 +608,22 @@ bool AnalyzeStructureSignal(
 
 
 //====================================================================
-// SIGNAL DIRECTION
+// DIRECTION
 //====================================================================
 
-// Returns:
-//
-//  1 = bullish
-// -1 = bearish
-//  0 = no direction
 int GetSignalDirection(
    StructureSignal &signal
 )
 {
-   if(signal.bullishMSS || signal.bullishBOS)
-      return 1;
+   if(!signal.valid)
+      return 0;
 
-   if(signal.bearishMSS || signal.bearishBOS)
-      return -1;
-
-   return 0;
+   return signal.direction;
 }
 
 
 //====================================================================
-// SIGNAL TYPE HELPERS
+// EVENT HELPERS
 //====================================================================
 
 bool IsMSSSignal(
@@ -658,8 +631,11 @@ bool IsMSSSignal(
 )
 {
    return
-      signal.bullishMSS ||
-      signal.bearishMSS;
+      signal.valid &&
+      (
+         signal.bullishMSS ||
+         signal.bearishMSS
+      );
 }
 
 
@@ -668,8 +644,11 @@ bool IsBOSSignal(
 )
 {
    return
-      signal.bullishBOS ||
-      signal.bearishBOS;
+      signal.valid &&
+      (
+         signal.bullishBOS ||
+         signal.bearishBOS
+      );
 }
 
 
@@ -677,14 +656,13 @@ bool IsBOSSignal(
 // DIRECTIONAL VALIDATION
 //====================================================================
 
-// Confirm that a signal contains bullish displacement AND
-// bullish structure.
 bool HasBullishDisplacementAndStructure(
    StructureSignal &signal
 )
 {
    return
       signal.valid &&
+      signal.direction > 0 &&
       signal.bullishDisplacement &&
       (
          signal.bullishMSS ||
@@ -693,14 +671,13 @@ bool HasBullishDisplacementAndStructure(
 }
 
 
-// Confirm that a signal contains bearish displacement AND
-// bearish structure.
 bool HasBearishDisplacementAndStructure(
    StructureSignal &signal
 )
 {
    return
       signal.valid &&
+      signal.direction < 0 &&
       signal.bearishDisplacement &&
       (
          signal.bearishMSS ||
@@ -710,7 +687,7 @@ bool HasBearishDisplacementAndStructure(
 
 
 //====================================================================
-// EVENT TO STRING
+// EVENT STRING
 //====================================================================
 
 string StructureEventToString(
@@ -738,7 +715,7 @@ string StructureEventToString(
 
 
 //====================================================================
-// DEBUG DESCRIPTION
+// DESCRIPTION
 //====================================================================
 
 string StructureSignalDescription(
@@ -750,25 +727,18 @@ string StructureSignalDescription(
 
    string direction = "NONE";
 
-   if(GetSignalDirection(signal) > 0)
+   if(signal.direction > 0)
       direction = "BULLISH";
-   else if(GetSignalDirection(signal) < 0)
+   else if(signal.direction < 0)
       direction = "BEARISH";
 
-   string eventText =
-      StructureEventToString(signal.event);
-
-   string structureText =
-      MarketStructureBiasToString(
-         signal.previousStructure
-      );
-
    return StringFormat(
-      "%s | Direction=%s | PreviousStructure=%s | BrokenLevel=%f | Shift=%d",
-      eventText,
+      "%s | Direction=%s | Structure=%d | Broken=%f | BodyRatio=%.2f | Shift=%d",
+      StructureEventToString(signal.event),
       direction,
-      structureText,
+      signal.previousStructure,
       signal.brokenLevel,
+      signal.bodyRatio,
       signal.signalShift
    );
 }
