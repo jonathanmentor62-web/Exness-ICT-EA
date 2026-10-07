@@ -1,18 +1,17 @@
 //+------------------------------------------------------------------+
-//| ExecutionEngine.mqh - controlled execution for M1 scalping      |
+//| ExecutionEngine.mqh                                              |
+//| Gold Multi-Strategy EA - Controlled Execution                    |
 //+------------------------------------------------------------------+
-#ifndef __EXNESS_ICT_EXECUTION_ENGINE_MQH__
-#define __EXNESS_ICT_EXECUTION_ENGINE_MQH__
+#ifndef __EXNESS_GOLD_EXECUTION_ENGINE_MQH__
+#define __EXNESS_GOLD_EXECUTION_ENGINE_MQH__
 
 #include <Trade/Trade.mqh>
 #include "Config.mqh"
 #include "RiskEngine.mqh"
-#include "M1Scalper.mqh"
 
-
-//==================================================================
+//====================================================================
 // EXECUTION RESULT
-//==================================================================
+//====================================================================
 
 struct ExecutionResult
 {
@@ -27,199 +26,50 @@ struct ExecutionResult
    string reason;
 };
 
-
-//==================================================================
+//====================================================================
 // RESET RESULT
-//==================================================================
+//====================================================================
 
-void ResetExecutionResult(
-   ExecutionResult &r
-)
+void ResetExecutionResult(ExecutionResult &r)
 {
-   r.attempted=false;
-   r.executed=false;
-
-   r.ticket=0;
-
-   r.volume=0.0;
-   r.riskMoney=0.0;
-
-   r.reason="";
+   r.attempted = false;
+   r.executed = false;
+   r.ticket = 0;
+   r.volume = 0.0;
+   r.riskMoney = 0.0;
+   r.reason = "";
 }
 
-
-//==================================================================
-// COUNT EA POSITIONS
-//==================================================================
-
-int EX_CountOurPositions(
-   const ulong magic,
-   const string symbol=""
-)
-{
-   int count=0;
-
-
-   for(
-      int i=PositionsTotal()-1;
-      i>=0;
-      i--
-   )
-   {
-      ulong ticket=
-         PositionGetTicket(i);
-
-
-      if(
-         ticket==0 ||
-         !PositionSelectByTicket(ticket)
-      )
-         continue;
-
-
-      if(
-         (ulong)PositionGetInteger(
-            POSITION_MAGIC
-         )!=magic
-      )
-         continue;
-
-
-      if(
-         symbol!="" &&
-         PositionGetString(
-            POSITION_SYMBOL
-         )!=symbol
-      )
-         continue;
-
-
-      count++;
-   }
-
-
-   return(count);
-}
-
-
-//==================================================================
-// CHECK OPPOSITE POSITION
-//==================================================================
-
-bool EX_HasOppositePosition(
-   const ulong magic,
-   const string symbol,
-   const ENUM_ORDER_TYPE orderType
-)
-{
-   long wanted=
-      (
-         orderType==ORDER_TYPE_BUY
-         ? POSITION_TYPE_SELL
-         : POSITION_TYPE_BUY
-      );
-
-
-   for(
-      int i=PositionsTotal()-1;
-      i>=0;
-      i--
-   )
-   {
-      ulong ticket=
-         PositionGetTicket(i);
-
-
-      if(
-         ticket==0 ||
-         !PositionSelectByTicket(ticket)
-      )
-         continue;
-
-
-      if(
-         (ulong)PositionGetInteger(
-            POSITION_MAGIC
-         )!=magic
-      )
-         continue;
-
-
-      if(
-         PositionGetString(
-            POSITION_SYMBOL
-         )!=symbol
-      )
-         continue;
-
-
-      if(
-         PositionGetInteger(
-            POSITION_TYPE
-         )==wanted
-      )
-      {
-         return(true);
-      }
-   }
-
-
-   return(false);
-}
-
-
-//==================================================================
+//====================================================================
 // SPREAD CHECK
-//==================================================================
+//====================================================================
 
 bool EX_SpreadOK(
    const string symbol,
    const int maxSpreadPts
 )
 {
+   if(!RE_IsGoldSymbol(symbol) || maxSpreadPts <= 0)
+      return false;
+
    MqlTick tick;
 
+   if(!SymbolInfoTick(symbol, tick))
+      return false;
 
-   if(
-      !SymbolInfoTick(
-         symbol,
-         tick
-      )
-   )
-      return(false);
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
 
+   if(point <= 0.0 || tick.bid <= 0.0 || tick.ask <= 0.0)
+      return false;
 
-   double point=
-      SymbolInfoDouble(
-         symbol,
-         SYMBOL_POINT
-      );
+   double spread = (tick.ask - tick.bid) / point;
 
-
-   if(
-      point<=0.0 ||
-      tick.bid<=0.0 ||
-      tick.ask<=0.0
-   )
-      return(false);
-
-
-   double spread=
-      (
-         tick.ask-
-         tick.bid
-      )/point;
-
-
-   return(
-      spread<=maxSpreadPts
-   );
+   return spread >= 0.0 && spread <= maxSpreadPts;
 }
 
-
-//==================================================================
+//====================================================================
 // STOP DISTANCE CHECK
-//==================================================================
+//====================================================================
 
 bool EX_StopDistanceOK(
    const string symbol,
@@ -228,73 +78,36 @@ bool EX_StopDistanceOK(
    const double sl
 )
 {
-   if(
-      entry<=0.0 ||
-      sl<=0.0
-   )
-      return(false);
+   if(!RE_IsGoldSymbol(symbol))
+      return false;
 
+   if(!RE_IsValidStop(symbol, type, entry, sl))
+      return false;
 
-   double point=
-      SymbolInfoDouble(
-         symbol,
-         SYMBOL_POINT
-      );
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   long stopsLevel = 0;
+   long freezeLevel = 0;
 
+   if(point <= 0.0)
+      return false;
 
-   if(point<=0.0)
-      return(false);
+   if(!SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL, stopsLevel))
+      return false;
 
+   if(!SymbolInfoInteger(symbol, SYMBOL_TRADE_FREEZE_LEVEL, freezeLevel))
+      return false;
 
-   long stopsLevel=0;
+   double minimumPoints = MathMax(
+      (double)ICT_MIN_STOP_DISTANCE_PTS,
+      MathMax((double)stopsLevel, (double)freezeLevel)
+   );
 
-
-   if(
-      !SymbolInfoInteger(
-         symbol,
-         SYMBOL_TRADE_STOPS_LEVEL,
-         stopsLevel
-      )
-   )
-      return(false);
-
-
-   double required=
-      MathMax(
-         (double)ICT_MIN_STOP_DISTANCE_PTS,
-         (double)stopsLevel
-      )*point;
-
-
-   if(type==ORDER_TYPE_BUY)
-   {
-      if(
-         sl>=entry ||
-         (entry-sl)<required
-      )
-         return(false);
-   }
-   else if(type==ORDER_TYPE_SELL)
-   {
-      if(
-         sl<=entry ||
-         (sl-entry)<required
-      )
-         return(false);
-   }
-   else
-   {
-      return(false);
-   }
-
-
-   return(true);
+   return MathAbs(entry - sl) >= minimumPoints * point;
 }
 
-
-//==================================================================
+//====================================================================
 // TAKE PROFIT CHECK
-//==================================================================
+//====================================================================
 
 bool EX_TakeProfitOK(
    const string symbol,
@@ -303,91 +116,147 @@ bool EX_TakeProfitOK(
    const double tp
 )
 {
-   if(
-      entry<=0.0 ||
-      tp<=0.0
-   )
-      return(false);
+   if(!RE_IsGoldSymbol(symbol) || entry <= 0.0 || tp <= 0.0)
+      return false;
 
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   long stopsLevel = 0;
+   long freezeLevel = 0;
 
-   double point=
-      SymbolInfoDouble(
-         symbol,
-         SYMBOL_POINT
-      );
+   if(point <= 0.0)
+      return false;
 
+   if(!SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL, stopsLevel))
+      return false;
 
-   if(point<=0.0)
-      return(false);
+   if(!SymbolInfoInteger(symbol, SYMBOL_TRADE_FREEZE_LEVEL, freezeLevel))
+      return false;
 
+   double minimumDistance = MathMax(
+      (double)ICT_MIN_STOP_DISTANCE_PTS,
+      MathMax((double)stopsLevel, (double)freezeLevel)
+   ) * point;
 
-   long stopsLevel=0;
+   if(type == ORDER_TYPE_BUY)
+      return tp > entry && tp - entry >= minimumDistance;
 
+   if(type == ORDER_TYPE_SELL)
+      return tp < entry && entry - tp >= minimumDistance;
 
-   SymbolInfoInteger(
-      symbol,
-      SYMBOL_TRADE_STOPS_LEVEL,
-      stopsLevel
-   );
-
-
-   double required=
-      MathMax(
-         (double)ICT_MIN_STOP_DISTANCE_PTS,
-         (double)stopsLevel
-      )*point;
-
-
-   if(type==ORDER_TYPE_BUY)
-   {
-      return(
-         tp>entry &&
-         (tp-entry)>=required
-      );
-   }
-
-
-   if(type==ORDER_TYPE_SELL)
-   {
-      return(
-         tp<entry &&
-         (entry-tp)>=required
-      );
-   }
-
-
-   return(false);
+   return false;
 }
 
+//====================================================================
+// COUNT EA POSITIONS
+//====================================================================
 
-//==================================================================
-// CHECK MT5 TRADE RESULT
-//==================================================================
-
-bool EX_TradeRequestSucceeded(
-   CTrade &trade
+int EX_CountOurPositions(
+   const ulong magic,
+   const string symbol = ""
 )
 {
-   uint code=
-      trade.ResultRetcode();
+   int count = 0;
 
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
 
-   return(
-      code==TRADE_RETCODE_DONE ||
-      code==TRADE_RETCODE_DONE_PARTIAL ||
-      code==TRADE_RETCODE_PLACED
-   );
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+
+      if((ulong)PositionGetInteger(POSITION_MAGIC) != magic)
+         continue;
+
+      string positionSymbol =
+         PositionGetString(POSITION_SYMBOL);
+
+      if(symbol != "" && positionSymbol != symbol)
+         continue;
+
+      count++;
+   }
+
+   return count;
 }
 
+//====================================================================
+// OPPOSITE POSITION CHECK
+//====================================================================
 
-//==================================================================
-// OPEN SCALP
-//==================================================================
-
-bool EX_OpenScalp(
-   CTrade &trade,
+bool EX_HasOppositePosition(
+   const ulong magic,
    const string symbol,
-   const M1ScalpSignal &signal,
+   const ENUM_ORDER_TYPE orderType
+)
+{
+   if(orderType != ORDER_TYPE_BUY && orderType != ORDER_TYPE_SELL)
+      return true;
+
+   ENUM_POSITION_TYPE wanted =
+      orderType == ORDER_TYPE_BUY
+      ? POSITION_TYPE_SELL
+      : POSITION_TYPE_BUY;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+
+      if((ulong)PositionGetInteger(POSITION_MAGIC) != magic)
+         continue;
+
+      if(PositionGetString(POSITION_SYMBOL) != symbol)
+         continue;
+
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == wanted)
+         return true;
+   }
+
+   return false;
+}
+
+//====================================================================
+// DUPLICATE SYMBOL POSITION CHECK
+//====================================================================
+
+bool EX_HasSymbolPosition(
+   const ulong magic,
+   const string symbol
+)
+{
+   return EX_CountOurPositions(magic, symbol) > 0;
+}
+
+//====================================================================
+// TRADE RESULT CHECK
+//====================================================================
+
+bool EX_TradeRequestSucceeded(CTrade &trade)
+{
+   uint code = trade.ResultRetcode();
+
+   return code == TRADE_RETCODE_DONE ||
+          code == TRADE_RETCODE_DONE_PARTIAL ||
+          code == TRADE_RETCODE_PLACED;
+}
+
+//====================================================================
+// VALIDATE AN EXECUTION CANDIDATE
+//====================================================================
+//
+// This function does not send an order. It validates a proposed
+// gold trade and returns a reason when it is rejected.
+//
+//====================================================================
+
+bool EX_ValidateCandidate(
+   const string symbol,
+   const ENUM_ORDER_TYPE orderType,
+   const double entry,
+   const double stopLoss,
+   const double takeProfit,
    const double riskPercent,
    const double maxTotalRiskPercent,
    const ulong magic,
@@ -399,705 +268,151 @@ bool EX_OpenScalp(
 )
 {
    ResetExecutionResult(result);
-
-   result.attempted=true;
-
-
-   //---------------------------------------------------------------
-   // Trading switch
-   //---------------------------------------------------------------
+   result.attempted = true;
 
    if(!tradingEnabled)
    {
-      result.reason=
-         "Trading disabled by EA input.";
-
-      return(false);
+      result.reason = "Trading disabled by EA input.";
+      return false;
    }
 
-
-   //---------------------------------------------------------------
-   // Signal validation
-   //---------------------------------------------------------------
-
-   if(!signal.valid)
+   if(ICT_DEVELOPMENT_MODE)
    {
-      result.reason=
-         "Invalid scalper signal.";
-
-      return(false);
+      result.reason = "Development mode blocks execution.";
+      return false;
    }
 
-
-   //---------------------------------------------------------------
-   // Symbol
-   //---------------------------------------------------------------
-
-   if(
-      !SymbolSelect(
-         symbol,
-         true
-      )
-   )
+   if(!RE_IsGoldSymbol(symbol))
    {
-      result.reason=
-         "Symbol could not be selected.";
-
-      return(false);
+      result.reason = "Gold-only protection rejected symbol.";
+      return false;
    }
 
-
-   long tradeMode=0;
-
-
-   if(
-      !SymbolInfoInteger(
-         symbol,
-         SYMBOL_TRADE_MODE,
-         tradeMode
-      ) ||
-      tradeMode==
-      SYMBOL_TRADE_MODE_DISABLED
-   )
+   if(!SymbolSelect(symbol, true))
    {
-      result.reason=
-         "Symbol trading is disabled.";
-
-      return(false);
+      result.reason = "Symbol could not be selected.";
+      return false;
    }
 
+   long tradeMode = 0;
 
-   //---------------------------------------------------------------
-   // Spread
-   //---------------------------------------------------------------
-
-   if(
-      !EX_SpreadOK(
-         symbol,
-         maxSpreadPts
-      )
-   )
+   if(!SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE, tradeMode) ||
+      tradeMode == SYMBOL_TRADE_MODE_DISABLED)
    {
-      result.reason=
-         "Spread too high.";
-
-      return(false);
+      result.reason = "Symbol trading is disabled.";
+      return false;
    }
 
-
-   //---------------------------------------------------------------
-   // Global position limit
-   //---------------------------------------------------------------
-
-   if(
-      EX_CountOurPositions(
-         magic
-      )>=maxPositions
-   )
+   if(orderType != ORDER_TYPE_BUY && orderType != ORDER_TYPE_SELL)
    {
-      result.reason=
-         "Maximum EA positions reached.";
-
-      return(false);
+      result.reason = "Unsupported order type.";
+      return false;
    }
 
-
-   //---------------------------------------------------------------
-   // Symbol position limit
-   //---------------------------------------------------------------
-
-   if(
-      EX_CountOurPositions(
-         magic,
-         symbol
-      )>=maxSymbolPositions
-   )
+   if(!EX_SpreadOK(symbol, maxSpreadPts))
    {
-      result.reason=
-         "Maximum symbol positions reached.";
-
-      return(false);
+      result.reason = "Spread too high or quote unavailable.";
+      return false;
    }
 
-
-   //---------------------------------------------------------------
-   // Opposite position protection
-   //---------------------------------------------------------------
-
-   if(
-      ICT_BLOCK_OPPOSITE_SYMBOL &&
-      EX_HasOppositePosition(
-         magic,
-         symbol,
-         signal.orderType
-      )
-   )
+   if(maxPositions <= 0 || maxSymbolPositions <= 0)
    {
-      result.reason=
-         "Opposite symbol position exists.";
-
-      return(false);
+      result.reason = "Invalid position limit.";
+      return false;
    }
 
-
-   //---------------------------------------------------------------
-   // Current executable price
-   //---------------------------------------------------------------
-
-   MqlTick tick;
-
-
-   if(
-      !SymbolInfoTick(
-         symbol,
-         tick
-      )
-   )
+   if(EX_CountOurPositions(magic) >= maxPositions)
    {
-      result.reason=
-         "No current tick.";
-
-      return(false);
+      result.reason = "Maximum EA positions reached.";
+      return false;
    }
 
-
-   double entry=
-      (
-         signal.orderType==
-         ORDER_TYPE_BUY
-         ? tick.ask
-         : tick.bid
-      );
-
-
-   if(entry<=0.0)
+   if(EX_CountOurPositions(magic, symbol) >= maxSymbolPositions)
    {
-      result.reason=
-         "Invalid current entry price.";
-
-      return(false);
+      result.reason = "Maximum gold positions reached.";
+      return false;
    }
 
-
-   //---------------------------------------------------------------
-   // Preserve signal distances
-   //---------------------------------------------------------------
-
-   double slDistance=
-      MathAbs(
-         signal.entry-
-         signal.stopLoss
-      );
-
-
-   double tpDistance=
-      MathAbs(
-         signal.takeProfit-
-         signal.entry
-      );
-
-
-   if(
-      slDistance<=0.0 ||
-      tpDistance<=0.0
-   )
+   if(ICT_BLOCK_DUPLICATE_SYMBOL &&
+      EX_HasSymbolPosition(magic, symbol))
    {
-      result.reason=
-         "Invalid signal distances.";
-
-      return(false);
+      result.reason = "Duplicate gold position blocked.";
+      return false;
    }
 
-
-   //---------------------------------------------------------------
-   // Re-anchor SL and TP to current executable price
-   //---------------------------------------------------------------
-
-   double stopLoss=
-      (
-         signal.orderType==
-         ORDER_TYPE_BUY
-         ?
-         entry-slDistance
-         :
-         entry+slDistance
-      );
-
-
-   double takeProfit=
-      (
-         signal.orderType==
-         ORDER_TYPE_BUY
-         ?
-         entry+tpDistance
-         :
-         entry-tpDistance
-      );
-
-
-   int digits=
-      (int)SymbolInfoInteger(
-         symbol,
-         SYMBOL_DIGITS
-      );
-
-
-   stopLoss=
-      NormalizeDouble(
-         stopLoss,
-         digits
-      );
-
-
-   takeProfit=
-      NormalizeDouble(
-         takeProfit,
-         digits
-      );
-
-
-   //---------------------------------------------------------------
-   // Stop-loss validation
-   //---------------------------------------------------------------
-
-   if(
-      !EX_StopDistanceOK(
-         symbol,
-         signal.orderType,
-         entry,
-         stopLoss
-      )
-   )
+   if(ICT_BLOCK_OPPOSITE_SYMBOL &&
+      EX_HasOppositePosition(magic, symbol, orderType))
    {
-      result.reason=
-         "Invalid/too-close stop loss.";
-
-      return(false);
+      result.reason = "Opposite gold position exists.";
+      return false;
    }
 
-
-   //---------------------------------------------------------------
-   // Take-profit validation
-   //---------------------------------------------------------------
-
-   if(
-      !EX_TakeProfitOK(
-         symbol,
-         signal.orderType,
-         entry,
-         takeProfit
-      )
-   )
+   if(!EX_StopDistanceOK(symbol, orderType, entry, stopLoss))
    {
-      result.reason=
-         "Invalid/too-close take profit.";
-
-      return(false);
+      result.reason = "Invalid or too-close structural stop loss.";
+      return false;
    }
 
-
-   //---------------------------------------------------------------
-   // Risk-based lot calculation
-   //---------------------------------------------------------------
-
-   double volume=
-      RE_CalculateCompoundingLots(
-         symbol,
-         signal.orderType,
-         entry,
-         stopLoss,
-         riskPercent
-      );
-
-
-   if(volume<=0.0)
+   if(!EX_TakeProfitOK(symbol, orderType, entry, takeProfit))
    {
-      result.reason=
-         "No broker-valid lot fits configured risk.";
-
-      return(false);
+      result.reason = "Invalid or too-close take profit.";
+      return false;
    }
 
-
-   //---------------------------------------------------------------
-   // Total risk validation
-   //---------------------------------------------------------------
-
-   if(
-      !RE_ValidateNewTrade(
-         symbol,
-         signal.orderType,
-         entry,
-         stopLoss,
-         volume,
-         riskPercent,
-         maxTotalRiskPercent
-      )
-   )
-   {
-      result.reason=
-         "Risk engine rejected trade.";
-
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Configure trade
-   //---------------------------------------------------------------
-
-   trade.SetExpertMagicNumber(
-      magic
-   );
-
-
-   trade.SetDeviationInPoints(
-      ICT_MAX_SLIPPAGE_PTS
-   );
-
-
-   trade.SetTypeFillingBySymbol(
-      symbol
-   );
-
-
-   //---------------------------------------------------------------
-   // Order comment
-   //---------------------------------------------------------------
-
-   string comment=
-      (
-         signal.orderType==
-         ORDER_TYPE_BUY
-         ?
-         "ICT-M1-SCALP-BUY"
-         :
-         "ICT-M1-SCALP-SELL"
-      );
-
-
-   //---------------------------------------------------------------
-   // Send order
-   //---------------------------------------------------------------
-
-   bool requestAccepted=
-      trade.PositionOpen(
-         symbol,
-         signal.orderType,
-         volume,
-         entry,
-         stopLoss,
-         takeProfit,
-         comment
-      );
-
-
-   //---------------------------------------------------------------
-   // Verify actual MT5 result
-   //---------------------------------------------------------------
-
-   if(
-      !requestAccepted ||
-      !EX_TradeRequestSucceeded(
-         trade
-      )
-   )
-   {
-      result.reason=
-         "MT5 order rejected: "+
-         trade.ResultRetcodeDescription();
-
-      return(false);
-   }
-
-
-   //---------------------------------------------------------------
-   // Success
-   //---------------------------------------------------------------
-
-   result.executed=true;
-
-
-   result.ticket=
-      trade.ResultDeal();
-
-
-   if(result.ticket==0)
-   {
-      result.ticket=
-         trade.ResultOrder();
-   }
-
-
-   result.volume=
-      volume;
-
-
-   result.riskMoney=
-      RE_PositionRiskMoney(
-         symbol,
-         signal.orderType,
-         volume,
-         entry,
-         stopLoss
-      );
-
-
-   result.reason=
-      "Scalp order executed.";
-
-
-   Print(
-      "[SCALP ENTRY] ",
+   double volume = RE_CalculateCompoundingLots(
       symbol,
-      " | ",
-      EnumToString(
-         signal.orderType
-      ),
-      " | lots=",
-      DoubleToString(
-         volume,
-         2
-      ),
-      " | score=",
-      DoubleToString(
-         signal.score,
-         1
-      ),
-      " | risk=",
-      DoubleToString(
-         result.riskMoney,
-         2
-      ),
-      " | reason=",
-      signal.reason
+      orderType,
+      entry,
+      stopLoss,
+      riskPercent
    );
 
-
-   return(true);
-}
-
-
-//==================================================================
-// CLOSE POSITION
-//==================================================================
-
-bool EX_ClosePosition(
-   CTrade &trade,
-   const ulong ticket,
-   const string reason
-)
-{
-   if(
-      ticket==0 ||
-      !PositionSelectByTicket(
-         ticket
-      )
-   )
-      return(false);
-
-
-   ulong magic=
-      (ulong)PositionGetInteger(
-         POSITION_MAGIC
-      );
-
-
-   if(
-      magic!=
-      ICT_MAGIC_NUMBER
-   )
-      return(false);
-
-
-   string symbol=
-      PositionGetString(
-         POSITION_SYMBOL
-      );
-
-
-   bool requestAccepted=
-      trade.PositionClose(
-         ticket,
-         ICT_MAX_SLIPPAGE_PTS
-      );
-
-
-   if(
-      !requestAccepted ||
-      !EX_TradeRequestSucceeded(
-         trade
-      )
-   )
+   if(volume <= 0.0)
    {
-      Print(
-         "[SCALP EXIT FAILED] ",
-         symbol,
-         " | ticket=",
-         ticket,
-         " | ",
-         trade.ResultRetcodeDescription()
-      );
-
-      return(false);
+      result.reason = "No broker-valid volume fits the risk limit.";
+      return false;
    }
 
-
-   Print(
-      "[SCALP EXIT] ",
+   if(!RE_ValidateNewTrade(
       symbol,
-      " | ticket=",
-      ticket,
-      " | reason=",
-      reason
+      orderType,
+      entry,
+      stopLoss,
+      volume,
+      riskPercent,
+      maxTotalRiskPercent
+   ))
+   {
+      result.reason = "Risk engine rejected the candidate.";
+      return false;
+   }
+
+   result.volume = volume;
+   result.riskMoney = RE_PositionRiskMoney(
+      symbol,
+      orderType,
+      volume,
+      entry,
+      stopLoss
    );
 
-
-   return(true);
+   result.reason = "Candidate passed preliminary validation; no order sent.";
+   return true;
 }
 
+//====================================================================
+// SAFE EXECUTION PLACEHOLDER
+//====================================================================
+//
+// Order submission will be added only after the strategy and
+// confluence signal structures are finalized.
+//
+//====================================================================
 
-//==================================================================
-// MANAGE EXISTING SCALPS
-//==================================================================
-
-void EX_ManageScalps(
-   CTrade &trade,
-   const ulong magic,
-   const int maxHoldSeconds
-)
+bool EX_ExecutionReady()
 {
-   datetime now=
-      TimeCurrent();
-
-
-   for(
-      int i=PositionsTotal()-1;
-      i>=0;
-      i--
-   )
-   {
-      ulong ticket=
-         PositionGetTicket(i);
-
-
-      if(
-         ticket==0 ||
-         !PositionSelectByTicket(
-            ticket
-         )
-      )
-         continue;
-
-
-      if(
-         (ulong)PositionGetInteger(
-            POSITION_MAGIC
-         )!=magic
-      )
-         continue;
-
-
-      //------------------------------------------------------------
-      // Only manage our M1 scalper positions
-      //------------------------------------------------------------
-
-      string comment=
-         PositionGetString(
-            POSITION_COMMENT
-         );
-
-
-      if(
-         StringFind(
-            comment,
-            "ICT-M1-SCALP-"
-         )<0
-      )
-         continue;
-
-
-      string symbol=
-         PositionGetString(
-            POSITION_SYMBOL
-         );
-
-
-      long type=
-         PositionGetInteger(
-            POSITION_TYPE
-         );
-
-
-      datetime openTime=
-         (datetime)PositionGetInteger(
-            POSITION_TIME
-         );
-
-
-      //------------------------------------------------------------
-      // Maximum holding time
-      //------------------------------------------------------------
-
-      if(
-         maxHoldSeconds>0 &&
-         openTime>0 &&
-         now-openTime>=
-         maxHoldSeconds
-      )
-      {
-         EX_ClosePosition(
-            trade,
-            ticket,
-            "maximum hold time reached"
-         );
-
-         continue;
-      }
-
-
-      //------------------------------------------------------------
-      // Opposite M1 signal
-      //------------------------------------------------------------
-
-      M1ScalpSignal signal;
-
-
-      if(
-         M1_BuildSignal(
-            symbol,
-            signal
-         ) &&
-         signal.valid
-      )
-      {
-         bool opposite=
-            (
-               type==
-               POSITION_TYPE_BUY &&
-               signal.orderType==
-               ORDER_TYPE_SELL
-            )
-            ||
-            (
-               type==
-               POSITION_TYPE_SELL &&
-               signal.orderType==
-               ORDER_TYPE_BUY
-            );
-
-
-         if(opposite)
-         {
-            EX_ClosePosition(
-               trade,
-               ticket,
-               "opposite M1 momentum/reversal signal"
-            );
-         }
-      }
-   }
+   return !ICT_DEVELOPMENT_MODE &&
+          ICT_TRADING_DEFAULT_ENABLED;
 }
-
 
 #endif
