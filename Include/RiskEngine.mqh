@@ -1,114 +1,140 @@
 //+------------------------------------------------------------------+
 //| RiskEngine.mqh                                                   |
-//| Dynamic equity-based risk and position sizing                    |
+//| Gold Multi-Strategy EA - Final Risk Authority                   |
 //+------------------------------------------------------------------+
-#ifndef __EXNESS_ICT_RISK_ENGINE_MQH__
-#define __EXNESS_ICT_RISK_ENGINE_MQH__
+#ifndef __EXNESS_GOLD_RISK_ENGINE_MQH__
+#define __EXNESS_GOLD_RISK_ENGINE_MQH__
 
 #include "Config.mqh"
 
-
-//==================================================================
+//====================================================================
 // ACCOUNT EQUITY
-//==================================================================
+//====================================================================
 
 double RE_GetEquity()
 {
-   return AccountInfoDouble(
-      ACCOUNT_EQUITY
-   );
+   return AccountInfoDouble(ACCOUNT_EQUITY);
 }
 
+double RE_GetBalance()
+{
+   return AccountInfoDouble(ACCOUNT_BALANCE);
+}
 
-//==================================================================
+double RE_GetFreeMargin()
+{
+   return AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+}
+
+//====================================================================
+// GOLD SYMBOL VALIDATION
+//====================================================================
+
+bool RE_IsGoldSymbol(const string symbol)
+{
+   if(symbol == "")
+      return false;
+
+   string upperSymbol = symbol;
+   StringToUpper(upperSymbol);
+
+   string prefix = ICT_GOLD_SYMBOL_PREFIX;
+   StringToUpper(prefix);
+
+   return StringFind(upperSymbol, prefix) == 0;
+}
+
+//====================================================================
 // EFFECTIVE RISK PERCENT
-//==================================================================
-//
-// The configured risk is limited by the EA's hard maximum.
-// A zero or negative value disables new risk.
-//
-//==================================================================
+//====================================================================
 
 double RE_GetRiskPercent(
    const double configuredRiskPercent
 )
 {
-   double riskPercent=
-      configuredRiskPercent;
+   double riskPercent = configuredRiskPercent;
 
+   if(riskPercent < 0.0)
+      riskPercent = 0.0;
 
-   if(riskPercent<0.0)
-      riskPercent=0.0;
-
-
-   if(
-      riskPercent>
-      ICT_MAX_RISK_PERCENT
-   )
-   {
-      riskPercent=
-         ICT_MAX_RISK_PERCENT;
-   }
-
+   if(riskPercent > ICT_MAX_RISK_PERCENT)
+      riskPercent = ICT_MAX_RISK_PERCENT;
 
    return riskPercent;
 }
 
-
-//==================================================================
+//====================================================================
 // RISK MONEY
-//==================================================================
-//
-// Converts percentage risk into account-currency money.
-//
-// Example:
-// Equity = $100
-// Risk   = 1%
-// Risk money = $1
-//
-//==================================================================
+//====================================================================
 
 double RE_GetRiskMoney(
    const double configuredRiskPercent
 )
 {
-   double equity=
-      RE_GetEquity();
+   double equity = RE_GetEquity();
 
-
-   if(equity<=0.0)
+   if(equity <= 0.0)
       return 0.0;
 
+   double riskPercent =
+      RE_GetRiskPercent(configuredRiskPercent);
 
-   double riskPercent=
-      RE_GetRiskPercent(
-         configuredRiskPercent
-      );
-
-
-   if(riskPercent<=0.0)
+   if(riskPercent <= 0.0)
       return 0.0;
 
-
-   return(
-      equity*
-      riskPercent/
-      100.0
-   );
+   return equity * riskPercent / 100.0;
 }
 
+//====================================================================
+// STRUCTURAL STOP VALIDATION
+//====================================================================
 
-//==================================================================
+bool RE_IsValidStop(
+   const string symbol,
+   const ENUM_ORDER_TYPE orderType,
+   const double entry,
+   const double stopLoss
+)
+{
+   if(symbol == "")
+      return false;
+
+   if(entry <= 0.0 || stopLoss <= 0.0)
+      return false;
+
+   if(orderType == ORDER_TYPE_BUY)
+   {
+      if(stopLoss >= entry)
+         return false;
+   }
+   else if(orderType == ORDER_TYPE_SELL)
+   {
+      if(stopLoss <= entry)
+         return false;
+   }
+   else
+   {
+      return false;
+   }
+
+   double point =
+      SymbolInfoDouble(symbol, SYMBOL_POINT);
+
+   if(point <= 0.0)
+      return false;
+
+   double distance =
+      MathAbs(entry - stopLoss) / point;
+
+   if(distance < ICT_MIN_STOP_DISTANCE_PTS)
+      return false;
+
+   return true;
+}
+
+//====================================================================
 // RISK PER LOT
-//==================================================================
-//
-// Calculates how much one full lot would lose if price travels
-// from entry to structural stop-loss.
-//
-// OrderCalcProfit() automatically accounts for the symbol's
-// contract specification, tick value and tick size.
-//
-//==================================================================
+//====================================================================
 
 double RE_CalculateRiskPerLot(
    const string symbol,
@@ -117,211 +143,143 @@ double RE_CalculateRiskPerLot(
    const double stopLoss
 )
 {
-   if(symbol=="")
-      return 0.0;
-
-
-   if(entry<=0.0)
-      return 0.0;
-
-
-   if(stopLoss<=0.0)
-      return 0.0;
-
-
-   if(
-      orderType!=ORDER_TYPE_BUY &&
-      orderType!=ORDER_TYPE_SELL
-   )
+   if(!RE_IsValidStop(
+      symbol,
+      orderType,
+      entry,
+      stopLoss
+   ))
    {
       return 0.0;
    }
 
+   double profit = 0.0;
 
-   double profit=0.0;
-
-
-   if(
-      !OrderCalcProfit(
-         orderType,
-         symbol,
-         1.0,
-         entry,
-         stopLoss,
-         profit
-      )
-   )
+   if(!OrderCalcProfit(
+      orderType,
+      symbol,
+      1.0,
+      entry,
+      stopLoss,
+      profit
+   ))
    {
       return 0.0;
    }
 
-
-   double risk=
-      MathAbs(
-         profit
-      );
-
-
-   return risk;
+   return MathAbs(profit);
 }
 
+//====================================================================
+// VOLUME DIGITS
+//====================================================================
 
-//==================================================================
-// NORMALIZE LOTS
-//==================================================================
-//
-// Normalizes volume to the broker's allowed minimum, maximum and
-// volume step.
-//
-// IMPORTANT:
-// This function never increases volume above the requested risk
-// when reducing to a broker volume step is necessary.
-//
-//==================================================================
+int RE_VolumeDigits(
+   const string symbol
+)
+{
+   double step =
+      SymbolInfoDouble(
+         symbol,
+         SYMBOL_VOLUME_STEP
+      );
+
+   if(step <= 0.0)
+      return 0;
+
+   int digits = 0;
+
+   while(
+      digits < 8 &&
+      MathAbs(
+         step - MathRound(step)
+      ) > 1e-9
+   )
+   {
+      step *= 10.0;
+      digits++;
+   }
+
+   return digits;
+}
+
+//====================================================================
+// NORMALIZE LOTS DOWNWARD
+//====================================================================
 
 double RE_NormalizeLots(
    const string symbol,
    const double requestedLots
 )
 {
-   if(symbol=="")
+   if(symbol == "")
       return 0.0;
 
-
-   if(requestedLots<=0.0)
+   if(requestedLots <= 0.0)
       return 0.0;
 
-
-   double minLot=
+   double minLot =
       SymbolInfoDouble(
          symbol,
          SYMBOL_VOLUME_MIN
       );
 
-
-   double maxLot=
+   double maxLot =
       SymbolInfoDouble(
          symbol,
          SYMBOL_VOLUME_MAX
       );
 
-
-   double step=
+   double step =
       SymbolInfoDouble(
          symbol,
          SYMBOL_VOLUME_STEP
       );
 
-
    if(
-      minLot<=0.0 ||
-      maxLot<=0.0 ||
-      step<=0.0
+      minLot <= 0.0 ||
+      maxLot <= 0.0 ||
+      step <= 0.0
    )
    {
       return 0.0;
    }
 
+   double lots = requestedLots;
 
-   double lots=
-      requestedLots;
+   if(lots > maxLot)
+      lots = maxLot;
 
-
-   //---------------------------------------------------------------
-   // Broker maximum
-   //---------------------------------------------------------------
-
-   if(lots>maxLot)
-      lots=maxLot;
-
-
-   //---------------------------------------------------------------
-   // Normalize DOWN to volume step.
-   //
-   // This is important for risk protection. Rounding upward could
-   // increase the calculated risk above the intended amount.
-   //---------------------------------------------------------------
-
-   lots=
+   // Always round DOWN.
+   lots =
       MathFloor(
-         (
-            lots+
-            1e-12
-         )/
-         step
-      )*
-      step;
+         (lots + 1e-12) / step
+      ) * step;
 
-
-   //---------------------------------------------------------------
-   // Broker minimum
-   //---------------------------------------------------------------
-
-   if(lots<minLot)
+   if(lots < minLot)
       return 0.0;
 
+   int digits =
+      RE_VolumeDigits(symbol);
 
-   //---------------------------------------------------------------
-   // Determine volume precision from the step
-   //---------------------------------------------------------------
-
-   int volumeDigits=0;
-
-   double tempStep=
-      step;
-
-
-   while(
-      volumeDigits<8 &&
-      MathAbs(
-         tempStep-
-         MathRound(tempStep)
-      )>
-      1e-9
-   )
-   {
-      tempStep*=10.0;
-      volumeDigits++;
-   }
-
-
-   lots=
+   lots =
       NormalizeDouble(
          lots,
-         volumeDigits
+         digits
       );
 
-
-   //---------------------------------------------------------------
-   // Final broker-bound checks
-   //---------------------------------------------------------------
-
-   if(lots<minLot)
+   if(lots < minLot)
       return 0.0;
 
-
-   if(lots>maxLot)
-      lots=maxLot;
-
+   if(lots > maxLot)
+      lots = maxLot;
 
    return lots;
 }
 
-
-//==================================================================
+//====================================================================
 // RAW RISK-BASED LOT SIZE
-//==================================================================
-//
-// Formula:
-//
-//     Risk Money
-// ----------------------
-// Risk Money Per 1 Lot
-//
-// The stop-loss distance is therefore structural rather than a
-// fixed dollar stop.
-//
-//==================================================================
+//====================================================================
 
 double RE_CalculateRawLots(
    const string symbol,
@@ -331,17 +289,26 @@ double RE_CalculateRawLots(
    const double riskPercent
 )
 {
-   double riskMoney=
-      RE_GetRiskMoney(
-         riskPercent
-      );
-
-
-   if(riskMoney<=0.0)
+   if(!RE_IsGoldSymbol(symbol))
       return 0.0;
 
+   if(!RE_IsValidStop(
+      symbol,
+      orderType,
+      entry,
+      stopLoss
+   ))
+   {
+      return 0.0;
+   }
 
-   double riskPerLot=
+   double riskMoney =
+      RE_GetRiskMoney(riskPercent);
+
+   if(riskMoney <= 0.0)
+      return 0.0;
+
+   double riskPerLot =
       RE_CalculateRiskPerLot(
          symbol,
          orderType,
@@ -349,27 +316,15 @@ double RE_CalculateRawLots(
          stopLoss
       );
 
-
-   if(riskPerLot<=0.0)
+   if(riskPerLot <= 0.0)
       return 0.0;
 
-
-   double rawLots=
-      riskMoney/
-      riskPerLot;
-
-
-   if(rawLots<=0.0)
-      return 0.0;
-
-
-   return rawLots;
+   return riskMoney / riskPerLot;
 }
 
-
-//==================================================================
+//====================================================================
 // RISK-BASED LOT SIZE
-//==================================================================
+//====================================================================
 
 double RE_CalculateLots(
    const string symbol,
@@ -379,7 +334,7 @@ double RE_CalculateLots(
    const double riskPercent
 )
 {
-   double rawLots=
+   double rawLots =
       RE_CalculateRawLots(
          symbol,
          orderType,
@@ -388,10 +343,8 @@ double RE_CalculateLots(
          riskPercent
       );
 
-
-   if(rawLots<=0.0)
+   if(rawLots <= 0.0)
       return 0.0;
-
 
    return RE_NormalizeLots(
       symbol,
@@ -399,30 +352,15 @@ double RE_CalculateLots(
    );
 }
 
-
-//==================================================================
-// COMPOUNDING LOT SIZE
-//==================================================================
+//====================================================================
+// COMPOUNDING LOT CEILING
+//====================================================================
 //
-// The EA has a desired equity-to-lot relationship:
+// This is an optional growth objective.
 //
-//     $5 equity -> target 0.03 lots
+// It NEVER overrides risk-based sizing.
 //
-// BUT 0.03 is NOT forced.
-//
-// The actual lot is limited by:
-//
-// 1. Account equity
-// 2. Configured percentage risk
-// 3. Structural stop-loss distance
-// 4. Broker minimum
-// 5. Broker maximum
-// 6. Broker volume step
-//
-// Therefore the risk engine always has final authority over the
-// requested compounding lot.
-//
-//==================================================================
+//====================================================================
 
 double RE_CalculateCompoundingLots(
    const string symbol,
@@ -432,11 +370,7 @@ double RE_CalculateCompoundingLots(
    const double riskPercent
 )
 {
-   //---------------------------------------------------------------
-   // Risk-safe lot
-   //---------------------------------------------------------------
-
-   double riskLots=
+   double riskLots =
       RE_CalculateLots(
          symbol,
          orderType,
@@ -445,86 +379,45 @@ double RE_CalculateCompoundingLots(
          riskPercent
       );
 
-
-   if(riskLots<=0.0)
+   if(riskLots <= 0.0)
       return 0.0;
 
-
-   //---------------------------------------------------------------
-   // Current equity
-   //---------------------------------------------------------------
-
-   double equity=
+   double equity =
       RE_GetEquity();
 
-
-   if(equity<=0.0)
+   if(equity <= 0.0)
       return 0.0;
 
-
-   //---------------------------------------------------------------
-   // Target compounding relationship
-   //---------------------------------------------------------------
-
    if(
-      ICT_TARGET_EQUITY_FOR_LOT<=0.0 ||
-      ICT_TARGET_LOTS_AT_EQUITY<=0.0
+      ICT_TARGET_EQUITY_FOR_LOT <= 0.0 ||
+      ICT_TARGET_LOTS_AT_EQUITY <= 0.0
    )
    {
       return riskLots;
    }
 
-
-   double desiredLots=
-      ICT_TARGET_LOTS_AT_EQUITY*
+   double desiredLots =
+      ICT_TARGET_LOTS_AT_EQUITY *
       (
-         equity/
+         equity /
          ICT_TARGET_EQUITY_FOR_LOT
       );
 
-
-   if(desiredLots<=0.0)
+   if(desiredLots <= 0.0)
       return 0.0;
 
-
-   //---------------------------------------------------------------
-   // Never allow the desired compounding target to exceed the
-   // independently calculated risk-safe lot.
-   //---------------------------------------------------------------
-
-   double finalLots=
+   return RE_NormalizeLots(
+      symbol,
       MathMin(
          riskLots,
          desiredLots
-      );
-
-
-   //---------------------------------------------------------------
-   // Normalize again after the compounding cap.
-   //---------------------------------------------------------------
-
-   finalLots=
-      RE_NormalizeLots(
-         symbol,
-         finalLots
-      );
-
-
-   return finalLots;
+      )
+   );
 }
 
-
-//==================================================================
-// POSITION RISK MONEY
-//==================================================================
-//
-// Calculates current monetary risk for an existing position using
-// its current SL.
-//
-// If the position has no SL, risk cannot be calculated reliably,
-// therefore this function returns 0.
-//
-//==================================================================
+//====================================================================
+// POSITION RISK
+//====================================================================
 
 double RE_PositionRiskMoney(
    const string symbol,
@@ -534,23 +427,10 @@ double RE_PositionRiskMoney(
    const double stopLoss
 )
 {
-   if(symbol=="")
+   if(volume <= 0.0)
       return 0.0;
 
-
-   if(volume<=0.0)
-      return 0.0;
-
-
-   if(entry<=0.0)
-      return 0.0;
-
-
-   if(stopLoss<=0.0)
-      return 0.0;
-
-
-   double riskPerLot=
+   double riskPerLot =
       RE_CalculateRiskPerLot(
          symbol,
          orderType,
@@ -558,155 +438,170 @@ double RE_PositionRiskMoney(
          stopLoss
       );
 
-
-   if(riskPerLot<=0.0)
+   if(riskPerLot <= 0.0)
       return 0.0;
 
-
-   return(
-      riskPerLot*
-      volume
-   );
+   return riskPerLot * volume;
 }
 
+//====================================================================
+// OPEN POSITION COUNT
+//====================================================================
 
-//==================================================================
-// OPEN POSITION RISK
-//==================================================================
-//
-// Calculates the combined known SL risk of all EA positions.
-//
-// Positions belonging to other EAs/manual trades are ignored by
-// magic number.
-//
-//==================================================================
-
-double RE_GetOpenRiskMoney()
+int RE_GetOpenPositionCount()
 {
-   double totalRisk=0.0;
+   int count = 0;
 
-
-   int totalPositions=
-      PositionsTotal();
-
-
-   for(
-      int i=0;
-      i<totalPositions;
-      i++
-   )
+   for(int i = 0; i < PositionsTotal(); i++)
    {
-      ulong ticket=
-         PositionGetTicket(
-            i
-         );
+      ulong ticket =
+         PositionGetTicket(i);
 
-
-      if(ticket==0)
+      if(ticket == 0)
          continue;
 
-
-      if(
-         !PositionSelectByTicket(
-            ticket
-         )
-      )
-      {
+      if(!PositionSelectByTicket(ticket))
          continue;
-      }
 
-
-      //-------------------------------------------------------------
-      // Only this EA's positions
-      //-------------------------------------------------------------
-
-      long magic=
+      long magic =
          PositionGetInteger(
             POSITION_MAGIC
          );
 
-
-      if(
-         (ulong)magic!=
-         (ulong)ICT_MAGIC_NUMBER
-      )
+      if((ulong)magic !=
+         (ulong)ICT_MAGIC_NUMBER)
       {
          continue;
       }
 
+      count++;
+   }
 
-      //-------------------------------------------------------------
-      // Position data
-      //-------------------------------------------------------------
+   return count;
+}
 
-      string symbol=
+//====================================================================
+// OPEN GOLD POSITION COUNT
+//====================================================================
+
+int RE_GetOpenGoldPositionCount()
+{
+   int count = 0;
+
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong ticket =
+         PositionGetTicket(i);
+
+      if(ticket == 0)
+         continue;
+
+      if(!PositionSelectByTicket(ticket))
+         continue;
+
+      long magic =
+         PositionGetInteger(
+            POSITION_MAGIC
+         );
+
+      if((ulong)magic !=
+         (ulong)ICT_MAGIC_NUMBER)
+      {
+         continue;
+      }
+
+      string symbol =
          PositionGetString(
             POSITION_SYMBOL
          );
 
+      if(RE_IsGoldSymbol(symbol))
+         count++;
+   }
 
-      ENUM_POSITION_TYPE positionType=
+   return count;
+}
+
+//====================================================================
+// OPEN RISK MONEY
+//====================================================================
+
+double RE_GetOpenRiskMoney()
+{
+   double totalRisk = 0.0;
+
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong ticket =
+         PositionGetTicket(i);
+
+      if(ticket == 0)
+         continue;
+
+      if(!PositionSelectByTicket(ticket))
+         continue;
+
+      long magic =
+         PositionGetInteger(
+            POSITION_MAGIC
+         );
+
+      if((ulong)magic !=
+         (ulong)ICT_MAGIC_NUMBER)
+      {
+         continue;
+      }
+
+      string symbol =
+         PositionGetString(
+            POSITION_SYMBOL
+         );
+
+      if(!RE_IsGoldSymbol(symbol))
+         continue;
+
+      double volume =
+         PositionGetDouble(
+            POSITION_VOLUME
+         );
+
+      double entry =
+         PositionGetDouble(
+            POSITION_PRICE_OPEN
+         );
+
+      double stopLoss =
+         PositionGetDouble(
+            POSITION_SL
+         );
+
+      if(stopLoss <= 0.0)
+         continue;
+
+      ENUM_POSITION_TYPE positionType =
          (ENUM_POSITION_TYPE)
          PositionGetInteger(
             POSITION_TYPE
          );
 
-
-      double volume=
-         PositionGetDouble(
-            POSITION_VOLUME
-         );
-
-
-      double entry=
-         PositionGetDouble(
-            POSITION_PRICE_OPEN
-         );
-
-
-      double stopLoss=
-         PositionGetDouble(
-            POSITION_SL
-         );
-
-
-      //-------------------------------------------------------------
-      // A position without an SL has no safely measurable
-      // structural risk here.
-      //
-      // The execution layer should normally reject such trades.
-      //-------------------------------------------------------------
-
-      if(stopLoss<=0.0)
-         continue;
-
-
       ENUM_ORDER_TYPE orderType;
 
-
-      if(
-         positionType==
-         POSITION_TYPE_BUY
-      )
+      if(positionType ==
+         POSITION_TYPE_BUY)
       {
-         orderType=
-            ORDER_TYPE_BUY;
+         orderType = ORDER_TYPE_BUY;
       }
-      else if(
-         positionType==
-         POSITION_TYPE_SELL
-      )
+      else if(positionType ==
+              POSITION_TYPE_SELL)
       {
-         orderType=
-            ORDER_TYPE_SELL;
+         orderType = ORDER_TYPE_SELL;
       }
       else
       {
          continue;
       }
 
-
-      double positionRisk=
+      double risk =
          RE_PositionRiskMoney(
             symbol,
             orderType,
@@ -715,60 +610,204 @@ double RE_GetOpenRiskMoney()
             stopLoss
          );
 
-
-      if(positionRisk>0.0)
-      {
-         totalRisk+=
-            positionRisk;
-      }
+      if(risk > 0.0)
+         totalRisk += risk;
    }
-
 
    return totalRisk;
 }
 
-
-//==================================================================
+//====================================================================
 // OPEN RISK PERCENT
-//==================================================================
+//====================================================================
 
 double RE_GetOpenRiskPercent()
 {
-   double equity=
+   double equity =
       RE_GetEquity();
 
-
-   if(equity<=0.0)
+   if(equity <= 0.0)
       return 0.0;
 
-
-   double openRisk=
+   double risk =
       RE_GetOpenRiskMoney();
 
-
-   if(openRisk<=0.0)
+   if(risk <= 0.0)
       return 0.0;
 
-
-   return(
-      openRisk/
-      equity*
-      100.0
-   );
+   return risk / equity * 100.0;
 }
 
+//====================================================================
+// DAILY LOSS
+//====================================================================
+//
+// Uses today's closed deals belonging to this EA.
+//
+//====================================================================
 
-//==================================================================
-// VALIDATE NEW TRADE
-//==================================================================
-//
-// Performs two independent risk checks:
-//
-// 1. New trade must stay within the configured per-trade risk.
-// 2. New trade plus existing open risk must stay within the
-//    combined portfolio risk limit.
-//
-//==================================================================
+double RE_GetTodayClosedProfit()
+{
+   datetime dayStart =
+      StringToTime(
+         TimeToString(
+            TimeCurrent(),
+            TIME_DATE
+         )
+      );
+
+   if(!HistorySelect(
+      dayStart,
+      TimeCurrent()
+   ))
+   {
+      return 0.0;
+   }
+
+   double profit = 0.0;
+
+   int total =
+      HistoryDealsTotal();
+
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket =
+         HistoryDealGetTicket(i);
+
+      if(ticket == 0)
+         continue;
+
+      long magic =
+         HistoryDealGetInteger(
+            ticket,
+            DEAL_MAGIC
+         );
+
+      if((ulong)magic !=
+         (ulong)ICT_MAGIC_NUMBER)
+      {
+         continue;
+      }
+
+      string symbol =
+         HistoryDealGetString(
+            ticket,
+            DEAL_SYMBOL
+         );
+
+      if(!RE_IsGoldSymbol(symbol))
+         continue;
+
+      long entry =
+         HistoryDealGetInteger(
+            ticket,
+            DEAL_ENTRY
+         );
+
+      if(
+         entry != DEAL_ENTRY_OUT &&
+         entry != DEAL_ENTRY_OUT_BY
+      )
+      {
+         continue;
+      }
+
+      profit +=
+         HistoryDealGetDouble(
+            ticket,
+            DEAL_PROFIT
+         );
+
+      profit +=
+         HistoryDealGetDouble(
+            ticket,
+            DEAL_SWAP
+         );
+
+      profit +=
+         HistoryDealGetDouble(
+            ticket,
+            DEAL_COMMISSION
+         );
+   }
+
+   return profit;
+}
+
+//====================================================================
+// DAILY LOSS LIMIT
+//====================================================================
+
+bool RE_DailyLossLimitReached()
+{
+   if(ICT_MAX_DAILY_LOSS_PERCENT <= 0.0)
+      return false;
+
+   double equity =
+      RE_GetEquity();
+
+   if(equity <= 0.0)
+      return true;
+
+   double todayProfit =
+      RE_GetTodayClosedProfit();
+
+   if(todayProfit >= 0.0)
+      return false;
+
+   double lossPercent =
+      MathAbs(todayProfit) /
+      equity *
+      100.0;
+
+   return lossPercent >=
+          ICT_MAX_DAILY_LOSS_PERCENT;
+}
+
+//====================================================================
+// FREE-MARGIN SAFETY
+//====================================================================
+
+bool RE_HasMarginForTrade(
+   const string symbol,
+   const ENUM_ORDER_TYPE orderType,
+   const double volume,
+   const double price
+)
+{
+   if(volume <= 0.0)
+      return false;
+
+   double requiredMargin = 0.0;
+
+   if(!OrderCalcMargin(
+      orderType,
+      symbol,
+      volume,
+      price,
+      requiredMargin
+   ))
+   {
+      return false;
+   }
+
+   if(requiredMargin <= 0.0)
+      return false;
+
+   double freeMargin =
+      RE_GetFreeMargin();
+
+   if(freeMargin <= 0.0)
+      return false;
+
+   // Keep a safety reserve rather than consuming all free margin.
+   return requiredMargin <=
+          freeMargin * 0.50;
+}
+
+//====================================================================
+// COMPLETE NEW-TRADE VALIDATION
+//====================================================================
 
 bool RE_ValidateNewTrade(
    const string symbol,
@@ -780,76 +819,98 @@ bool RE_ValidateNewTrade(
    const double maxTotalRiskPercent
 )
 {
-   if(symbol=="")
-      return false;
-
-
-   if(volume<=0.0)
-      return false;
-
-
-   if(entry<=0.0)
-      return false;
-
-
-   if(stopLoss<=0.0)
-      return false;
-
-
    //---------------------------------------------------------------
-   // Effective per-trade risk
+   // Gold only
    //---------------------------------------------------------------
 
-   double effectiveRiskPercent=
+   if(!RE_IsGoldSymbol(symbol))
+      return false;
+
+   //---------------------------------------------------------------
+   // Development mode
+   //---------------------------------------------------------------
+
+   if(ICT_DEVELOPMENT_MODE)
+      return false;
+
+   //---------------------------------------------------------------
+   // Basic values
+   //---------------------------------------------------------------
+
+   if(volume <= 0.0)
+      return false;
+
+   if(entry <= 0.0 || stopLoss <= 0.0)
+      return false;
+
+   //---------------------------------------------------------------
+   // Structural stop
+   //---------------------------------------------------------------
+
+   if(!RE_IsValidStop(
+      symbol,
+      orderType,
+      entry,
+      stopLoss
+   ))
+   {
+      return false;
+   }
+
+   //---------------------------------------------------------------
+   // Effective risk
+   //---------------------------------------------------------------
+
+   double effectiveRiskPercent =
       RE_GetRiskPercent(
          riskPercent
       );
 
-
-   if(effectiveRiskPercent<=0.0)
+   if(effectiveRiskPercent <= 0.0)
       return false;
 
-
    //---------------------------------------------------------------
-   // Maximum combined risk
+   // Equity
    //---------------------------------------------------------------
 
-   double totalRiskLimitPercent=
-      maxTotalRiskPercent;
+   double equity =
+      RE_GetEquity();
 
-
-   if(totalRiskLimitPercent<=0.0)
+   if(equity <= 0.0)
       return false;
 
+   //---------------------------------------------------------------
+   // Daily loss protection
+   //---------------------------------------------------------------
+
+   if(RE_DailyLossLimitReached())
+      return false;
+
+   //---------------------------------------------------------------
+   // Position limits
+   //---------------------------------------------------------------
 
    if(
-      totalRiskLimitPercent<
-      effectiveRiskPercent
+      RE_GetOpenPositionCount() >=
+      ICT_MAX_TOTAL_POSITIONS
    )
    {
-      // The total-risk limit can never be below the risk of the
-      // individual trade being requested.
       return false;
    }
 
-
-   //---------------------------------------------------------------
-   // Account equity
-   //---------------------------------------------------------------
-
-   double equity=
-      RE_GetEquity();
-
-
-   if(equity<=0.0)
+   if(
+      RE_GetOpenGoldPositionCount() >=
+      ICT_MAX_SYMBOL_POSITIONS
+   )
+   {
       return false;
-
+   }
 
    //---------------------------------------------------------------
-   // Risk of requested position
+   // Calculate actual position risk
    //---------------------------------------------------------------
 
-   double newTradeRisk=
+   double newTradeRisk =
       RE_PositionRiskMoney(
          symbol,
          orderType,
@@ -858,105 +919,117 @@ bool RE_ValidateNewTrade(
          stopLoss
       );
 
-
-   if(newTradeRisk<=0.0)
+   if(newTradeRisk <= 0.0)
       return false;
-
 
    //---------------------------------------------------------------
    // Per-trade risk limit
    //---------------------------------------------------------------
 
-   double maxTradeRiskMoney=
-      equity*
-      effectiveRiskPercent/
+   double maxTradeRiskMoney =
+      equity *
+      effectiveRiskPercent /
       100.0;
 
-
    if(
-      newTradeRisk>
-      maxTradeRiskMoney+
-      1e-8
+      newTradeRisk >
+      maxTradeRiskMoney + 1e-8
    )
    {
       return false;
    }
 
-
    //---------------------------------------------------------------
-   // Existing open risk
+   // Total portfolio risk
    //---------------------------------------------------------------
 
-   double existingRisk=
+   double totalRiskLimit =
+      maxTotalRiskPercent;
+
+   if(totalRiskLimit <= 0.0)
+      return false;
+
+   if(
+      totalRiskLimit <
+      effectiveRiskPercent
+   )
+   {
+      return false;
+   }
+
+   double existingRisk =
       RE_GetOpenRiskMoney();
 
-
-   //---------------------------------------------------------------
-   // Maximum total risk
-   //---------------------------------------------------------------
-
-   double maxTotalRiskMoney=
-      equity*
-      totalRiskLimitPercent/
+   double maxTotalRiskMoney =
+      equity *
+      totalRiskLimit /
       100.0;
 
-
-   double combinedRisk=
-      existingRisk+
+   double combinedRisk =
+      existingRisk +
       newTradeRisk;
 
-
    if(
-      combinedRisk>
-      maxTotalRiskMoney+
-      1e-8
+      combinedRisk >
+      maxTotalRiskMoney + 1e-8
    )
    {
       return false;
    }
 
+   //---------------------------------------------------------------
+   // Margin safety
+   //---------------------------------------------------------------
+
+   if(!RE_HasMarginForTrade(
+      symbol,
+      orderType,
+      volume,
+      entry
+   ))
+   {
+      return false;
+   }
 
    return true;
 }
 
-
-//==================================================================
+//====================================================================
 // RISK SUMMARY
-//==================================================================
+//====================================================================
 
 void RE_PrintSummary()
 {
-   double equity=
+   double equity =
       RE_GetEquity();
 
+   double balance =
+      RE_GetBalance();
 
-   double openRiskMoney=
+   double freeMargin =
+      RE_GetFreeMargin();
+
+   double openRiskMoney =
       RE_GetOpenRiskMoney();
 
-
-   double openRiskPercent=
+   double openRiskPercent =
       RE_GetOpenRiskPercent();
 
-
+   double todayProfit =
+     RE_GetTodayClosedProfit();
+             
    Print(
       "RiskEngine | Equity=",
-      DoubleToString(
-         equity,
-         2
-      ),
+      DoubleToString(equity, 2),
+      " | Balance=",
+      DoubleToString(balance, 2),
+      " | FreeMargin=",
+      DoubleToString(freeMargin, 2),
       " | OpenRisk=",
-      DoubleToString(
-         openRiskMoney,
-         2
-      ),
+      DoubleToString(openRiskMoney, 2),
       " | OpenRisk%=",
-      DoubleToString(
-         openRiskPercent,
-         2
-      ),
-      "%"
+      DoubleToString(openRiskPercent, 2),
+      "% | TodayClosed=",
+      DoubleToString(todayProfit, 2)
    );
 }
-
-
-#endif
