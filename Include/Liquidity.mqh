@@ -1,77 +1,80 @@
 //+------------------------------------------------------------------+
 //| Liquidity.mqh                                                    |
-//| ICT liquidity and liquidity sweep detection                      |
+//| Gold Multi-Strategy EA - Liquidity Engine                       |
 //+------------------------------------------------------------------+
-#ifndef __EXNESS_ICT_LIQUIDITY_MQH__
-#define __EXNESS_ICT_LIQUIDITY_MQH__
+#ifndef __EXNESS_GOLD_LIQUIDITY_MQH__
+#define __EXNESS_GOLD_LIQUIDITY_MQH__
 
 #include "MarketStructure.mqh"
 
-//====================================================================
+//==================================================================
 // LIQUIDITY TYPES
-//====================================================================
+//==================================================================
 
 enum ENUM_LIQUIDITY_TYPE
 {
    LIQUIDITY_NONE = 0,
    LIQUIDITY_BUY_SIDE,
-   LIQUIDITY_SELL_SIDE
+   LIQUIDITY_SELL_SIDE,
+   LIQUIDITY_EQUAL_HIGH,
+   LIQUIDITY_EQUAL_LOW,
+   LIQUIDITY_PREVIOUS_DAY_HIGH,
+   LIQUIDITY_PREVIOUS_DAY_LOW,
+   LIQUIDITY_PREVIOUS_WEEK_HIGH,
+   LIQUIDITY_PREVIOUS_WEEK_LOW
 };
 
 
-//====================================================================
+//==================================================================
 // LIQUIDITY LEVEL
-//====================================================================
+//==================================================================
 
 struct LiquidityLevel
 {
-   bool                valid;
-   ENUM_LIQUIDITY_TYPE type;
+   bool                 valid;
+   ENUM_LIQUIDITY_TYPE  type;
 
-   double              price;
+   double               price;
 
-   int                 shift;
-   datetime            time;
+   int                  shift;
+   datetime             time;
 };
 
 
-//====================================================================
+//==================================================================
 // LIQUIDITY SWEEP
-//====================================================================
+//==================================================================
 
 struct LiquiditySweep
 {
-   bool                valid;
+   bool                 valid;
 
-   ENUM_LIQUIDITY_TYPE type;
+   ENUM_LIQUIDITY_TYPE  type;
 
-   double              liquidityPrice;
-   double              sweepExtreme;
+   double               liquidityPrice;
+   double               sweepExtreme;
 
-   int                 liquidityShift;
-   int                 signalShift;
+   int                  liquidityShift;
+   int                  signalShift;
 
-   datetime            liquidityTime;
-   datetime            signalTime;
+   datetime              liquidityTime;
+   datetime              signalTime;
 };
 
 
-//====================================================================
-// RESET HELPERS
-//====================================================================
+//==================================================================
+// RESET
+//==================================================================
 
 void ResetLiquidityLevel(
    LiquidityLevel &level
 )
 {
    level.valid = false;
-
-   level.type = LIQUIDITY_NONE;
-
+   level.type  = LIQUIDITY_NONE;
    level.price = 0.0;
-
    level.shift = -1;
-   level.time = 0;
+   level.time  = 0;
 }
 
 
@@ -80,31 +83,23 @@ void ResetLiquiditySweep(
 )
 {
    sweep.valid = false;
-
-   sweep.type = LIQUIDITY_NONE;
+   sweep.type  = LIQUIDITY_NONE;
 
    sweep.liquidityPrice = 0.0;
-   sweep.sweepExtreme = 0.0;
+   sweep.sweepExtreme   = 0.0;
 
    sweep.liquidityShift = -1;
-   sweep.signalShift = -1;
+   sweep.signalShift    = -1;
 
    sweep.liquidityTime = 0;
-   sweep.signalTime = 0;
+   sweep.signalTime    = 0;
 }
 
 
-//====================================================================
-// BUY-SIDE LIQUIDITY
-//====================================================================
+//==================================================================
+// SWING LIQUIDITY
+//==================================================================
 
-// Buy-side liquidity is represented by a confirmed swing high.
-//
-// Typical ICT interpretation:
-// Buy stops tend to accumulate above obvious highs.
-//
-// The latest confirmed swing high is therefore treated as the
-// nearest detectable buy-side liquidity pool.
 bool FindNearestBuySideLiquidity(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -126,31 +121,18 @@ bool FindNearestBuySideLiquidity(
       rightBars,
       swingHigh
    ))
-   {
       return false;
-   }
 
    level.valid = true;
-
-   level.type = LIQUIDITY_BUY_SIDE;
-
+   level.type  = LIQUIDITY_BUY_SIDE;
    level.price = swingHigh.price;
-
    level.shift = swingHigh.shift;
-   level.time = swingHigh.time;
+   level.time  = swingHigh.time;
 
    return true;
 }
 
 
-//====================================================================
-// SELL-SIDE LIQUIDITY
-//====================================================================
-
-// Sell-side liquidity is represented by a confirmed swing low.
-//
-// Typical ICT interpretation:
-// Sell stops tend to accumulate below obvious lows.
 bool FindNearestSellSideLiquidity(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -172,26 +154,307 @@ bool FindNearestSellSideLiquidity(
       rightBars,
       swingLow
    ))
-   {
       return false;
-   }
 
    level.valid = true;
-
-   level.type = LIQUIDITY_SELL_SIDE;
-
+   level.type  = LIQUIDITY_SELL_SIDE;
    level.price = swingLow.price;
-
    level.shift = swingLow.shift;
-   level.time = swingLow.time;
+   level.time  = swingLow.time;
 
    return true;
 }
 
 
-//====================================================================
-// LIQUIDITY PRICE HELPERS
-//====================================================================
+//==================================================================
+// PREVIOUS DAY LIQUIDITY
+//==================================================================
+
+bool FindPreviousDayHigh(
+   string symbol,
+   LiquidityLevel &level
+)
+{
+   ResetLiquidityLevel(level);
+
+   double price = iHigh(
+      symbol,
+      PERIOD_D1,
+      1
+   );
+
+   datetime time = iTime(
+      symbol,
+      PERIOD_D1,
+      1
+   );
+
+   if(price <= 0.0 || time <= 0)
+      return false;
+
+   level.valid = true;
+   level.type  = LIQUIDITY_PREVIOUS_DAY_HIGH;
+   level.price = price;
+   level.shift = 1;
+   level.time  = time;
+
+   return true;
+}
+
+
+bool FindPreviousDayLow(
+   string symbol,
+   LiquidityLevel &level
+)
+{
+   ResetLiquidityLevel(level);
+
+   double price = iLow(
+      symbol,
+      PERIOD_D1,
+      1
+   );
+
+   datetime time = iTime(
+      symbol,
+      PERIOD_D1,
+      1
+   );
+
+   if(price <= 0.0 || time <= 0)
+      return false;
+
+   level.valid = true;
+   level.type  = LIQUIDITY_PREVIOUS_DAY_LOW;
+   level.price = price;
+   level.shift = 1;
+   level.time  = time;
+
+   return true;
+}
+
+
+//==================================================================
+// PREVIOUS WEEK LIQUIDITY
+//==================================================================
+
+bool FindPreviousWeekHigh(
+   string symbol,
+   LiquidityLevel &level
+)
+{
+   ResetLiquidityLevel(level);
+
+   double price = iHigh(
+      symbol,
+      PERIOD_W1,
+      1
+   );
+
+   datetime time = iTime(
+      symbol,
+      PERIOD_W1,
+      1
+   );
+
+   if(price <= 0.0 || time <= 0)
+      return false;
+
+   level.valid = true;
+   level.type  = LIQUIDITY_PREVIOUS_WEEK_HIGH;
+   level.price = price;
+   level.shift = 1;
+   level.time  = time;
+
+   return true;
+}
+
+
+bool FindPreviousWeekLow(
+   string symbol,
+   LiquidityLevel &level
+)
+{
+   ResetLiquidityLevel(level);
+
+   double price = iLow(
+      symbol,
+      PERIOD_W1,
+      1
+   );
+
+   datetime time = iTime(
+      symbol,
+      PERIOD_W1,
+      1
+   );
+
+   if(price <= 0.0 || time <= 0)
+      return false;
+
+   level.valid = true;
+   level.type  = LIQUIDITY_PREVIOUS_WEEK_LOW;
+   level.price = price;
+   level.shift = 1;
+   level.time  = time;
+
+   return true;
+}
+
+
+//==================================================================
+// EQUAL HIGHS
+//==================================================================
+
+bool FindEqualHighs(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int lookback,
+   double tolerancePoints,
+   LiquidityLevel &level
+)
+{
+   ResetLiquidityLevel(level);
+
+   int bars = Bars(symbol,timeframe);
+
+   if(bars <= 0)
+      return false;
+
+   int maxShift = MathMin(
+      lookback,
+      bars-3
+   );
+
+   if(maxShift < 2)
+      return false;
+
+   double tolerance =
+      tolerancePoints *
+      SymbolInfoDouble(
+         symbol,
+         SYMBOL_POINT
+      );
+
+   for(int first=2; first<=maxShift; first++)
+   {
+      double firstHigh =
+         iHigh(symbol,timeframe,first);
+
+      if(firstHigh <= 0.0)
+         continue;
+
+      for(int second=first+1;
+          second<=maxShift;
+          second++)
+      {
+         double secondHigh =
+            iHigh(symbol,timeframe,second);
+
+         if(secondHigh <= 0.0)
+            continue;
+
+         if(MathAbs(firstHigh-secondHigh)
+            <= tolerance)
+         {
+            level.valid = true;
+            level.type  = LIQUIDITY_EQUAL_HIGH;
+            level.price = (firstHigh+secondHigh)/2.0;
+            level.shift = first;
+            level.time  =
+               iTime(
+                  symbol,
+                  timeframe,
+                  first
+               );
+
+            return true;
+         }
+      }
+   }
+
+   return false;
+}
+
+
+//==================================================================
+// EQUAL LOWS
+//==================================================================
+
+bool FindEqualLows(
+   string symbol,
+   ENUM_TIMEFRAMES timeframe,
+   int lookback,
+   double tolerancePoints,
+   LiquidityLevel &level
+)
+{
+   ResetLiquidityLevel(level);
+
+   int bars = Bars(symbol,timeframe);
+
+   if(bars <= 0)
+      return false;
+
+   int maxShift = MathMin(
+      lookback,
+      bars-3
+   );
+
+   if(maxShift < 2)
+      return false;
+
+   double tolerance =
+      tolerancePoints *
+      SymbolInfoDouble(
+         symbol,
+         SYMBOL_POINT
+      );
+
+   for(int first=2; first<=maxShift; first++)
+   {
+      double firstLow =
+         iLow(symbol,timeframe,first);
+
+      if(firstLow <= 0.0)
+         continue;
+
+      for(int second=first+1;
+          second<=maxShift;
+          second++)
+      {
+         double secondLow =
+            iLow(symbol,timeframe,second);
+
+         if(secondLow <= 0.0)
+            continue;
+
+         if(MathAbs(firstLow-secondLow)
+            <= tolerance)
+         {
+            level.valid = true;
+            level.type  = LIQUIDITY_EQUAL_LOW;
+            level.price = (firstLow+secondLow)/2.0;
+            level.shift = first;
+            level.time  =
+               iTime(
+                  symbol,
+                  timeframe,
+                  first
+               );
+
+            return true;
+         }
+      }
+   }
+
+   return false;
+}
+
+
+//==================================================================
+// PRICE HELPERS
+//==================================================================
 
 double GetNearestBuySideLiquidityPrice(
    string symbol,
@@ -211,9 +474,7 @@ double GetNearestBuySideLiquidityPrice(
       rightBars,
       level
    ))
-   {
       return 0.0;
-   }
 
    return level.price;
 }
@@ -237,26 +498,16 @@ double GetNearestSellSideLiquidityPrice(
       rightBars,
       level
    ))
-   {
       return 0.0;
-   }
 
    return level.price;
 }
 
 
-//====================================================================
-// SWEEP DETECTION
-//====================================================================
+//==================================================================
+// GENERIC SWEEP DETECTION
+//==================================================================
 
-// Detect a buy-side liquidity sweep.
-//
-// Price must:
-// 1. Trade above the liquidity level.
-// 2. Then close back below the liquidity level.
-//
-// This models a sweep of buy-side liquidity rather than simply
-// detecting a normal breakout.
 bool DetectBuySideLiquiditySweep(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -283,11 +534,8 @@ bool DetectBuySideLiquiditySweep(
       rightBars,
       level
    ))
-   {
       return false;
-   }
 
-   // The liquidity level must be older than the signal candle.
    if(level.shift <= signalShift)
       return false;
 
@@ -308,31 +556,26 @@ bool DetectBuySideLiquiditySweep(
    if(high <= 0.0 || close <= 0.0)
       return false;
 
-   // Price must actually trade above the liquidity level.
    if(high <= level.price)
       return false;
 
-   double sweepDistance =
-      high - level.price;
+   double distance =
+      high-level.price;
 
-   if(sweepDistance < minimumSweepDistance)
+   if(distance < minimumSweepDistance)
       return false;
 
-   // A sweep requires rejection back below the liquidity level.
    if(close >= level.price)
       return false;
 
    sweep.valid = true;
-
-   sweep.type = LIQUIDITY_BUY_SIDE;
+   sweep.type  = level.type;
 
    sweep.liquidityPrice = level.price;
-
-   sweep.sweepExtreme = high;
+   sweep.sweepExtreme   = high;
 
    sweep.liquidityShift = level.shift;
-
-   sweep.signalShift = signalShift;
+   sweep.signalShift    = signalShift;
 
    sweep.liquidityTime = level.time;
 
@@ -347,15 +590,6 @@ bool DetectBuySideLiquiditySweep(
 }
 
 
-//====================================================================
-// SELL-SIDE SWEEP
-//====================================================================
-
-// Detect a sell-side liquidity sweep.
-//
-// Price must:
-// 1. Trade below the liquidity level.
-// 2. Then close back above the liquidity level.
 bool DetectSellSideLiquiditySweep(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -382,11 +616,8 @@ bool DetectSellSideLiquiditySweep(
       rightBars,
       level
    ))
-   {
       return false;
-   }
 
-   // The liquidity level must be older than the signal candle.
    if(level.shift <= signalShift)
       return false;
 
@@ -407,31 +638,26 @@ bool DetectSellSideLiquiditySweep(
    if(low <= 0.0 || close <= 0.0)
       return false;
 
-   // Price must actually trade below the liquidity level.
    if(low >= level.price)
       return false;
 
-   double sweepDistance =
-      level.price - low;
+   double distance =
+      level.price-low;
 
-   if(sweepDistance < minimumSweepDistance)
+   if(distance < minimumSweepDistance)
       return false;
 
-   // A sweep requires rejection back above the liquidity level.
    if(close <= level.price)
       return false;
 
    sweep.valid = true;
-
-   sweep.type = LIQUIDITY_SELL_SIDE;
+   sweep.type  = level.type;
 
    sweep.liquidityPrice = level.price;
-
-   sweep.sweepExtreme = low;
+   sweep.sweepExtreme   = low;
 
    sweep.liquidityShift = level.shift;
-
-   sweep.signalShift = signalShift;
+   sweep.signalShift    = signalShift;
 
    sweep.liquidityTime = level.time;
 
@@ -446,17 +672,10 @@ bool DetectSellSideLiquiditySweep(
 }
 
 
-//====================================================================
-// GENERIC LIQUIDITY SWEEP
-//====================================================================
+//==================================================================
+// GENERIC SWEEP
+//==================================================================
 
-// Returns:
-//
-//  1 = buy-side sweep
-// -1 = sell-side sweep
-//  0 = no sweep
-//
-// This helper checks both directions.
 int DetectLiquiditySweep(
    string symbol,
    ENUM_TIMEFRAMES timeframe,
@@ -470,7 +689,7 @@ int DetectLiquiditySweep(
 {
    ResetLiquiditySweep(sweep);
 
-   LiquiditySweep buySideSweep;
+   LiquiditySweep buySweep;
 
    if(DetectBuySideLiquiditySweep(
       symbol,
@@ -480,16 +699,15 @@ int DetectLiquiditySweep(
       leftBars,
       rightBars,
       minimumSweepDistance,
-      buySideSweep
+      buySweep
    ))
    {
-      sweep = buySideSweep;
-
+      sweep = buySweep;
       return 1;
    }
 
 
-   LiquiditySweep sellSideSweep;
+   LiquiditySweep sellSweep;
 
    if(DetectSellSideLiquiditySweep(
       symbol,
@@ -499,11 +717,10 @@ int DetectLiquiditySweep(
       leftBars,
       rightBars,
       minimumSweepDistance,
-      sellSideSweep
+      sellSweep
    ))
    {
-      sweep = sellSideSweep;
-
+      sweep = sellSweep;
       return -1;
    }
 
@@ -511,11 +728,10 @@ int DetectLiquiditySweep(
 }
 
 
-//====================================================================
-// LIQUIDITY RELATIONSHIP HELPERS
-//====================================================================
+//==================================================================
+// LIQUIDITY RELATIONSHIPS
+//==================================================================
 
-// Determine whether price is above a liquidity level.
 bool IsAboveLiquidity(
    double price,
    LiquidityLevel &level
@@ -528,7 +744,6 @@ bool IsAboveLiquidity(
 }
 
 
-// Determine whether price is below a liquidity level.
 bool IsBelowLiquidity(
    double price,
    LiquidityLevel &level
@@ -541,9 +756,6 @@ bool IsBelowLiquidity(
 }
 
 
-// Determine whether price is at/near a liquidity level.
-//
-// The tolerance is expressed in price units.
 bool IsNearLiquidity(
    double price,
    LiquidityLevel &level,
@@ -556,13 +768,15 @@ bool IsNearLiquidity(
    if(tolerance < 0.0)
       tolerance = 0.0;
 
-   return MathAbs(price - level.price) <= tolerance;
+   return MathAbs(
+      price-level.price
+   ) <= tolerance;
 }
 
 
-//====================================================================
-// SWEEP TYPE HELPERS
-//====================================================================
+//==================================================================
+// SWEEP TYPE
+//==================================================================
 
 bool IsBuySideSweep(
    LiquiditySweep &sweep
@@ -570,7 +784,10 @@ bool IsBuySideSweep(
 {
    return
       sweep.valid &&
-      sweep.type == LIQUIDITY_BUY_SIDE;
+      (sweep.type == LIQUIDITY_BUY_SIDE ||
+       sweep.type == LIQUIDITY_EQUAL_HIGH ||
+       sweep.type == LIQUIDITY_PREVIOUS_DAY_HIGH ||
+       sweep.type == LIQUIDITY_PREVIOUS_WEEK_HIGH);
 }
 
 
@@ -580,13 +797,16 @@ bool IsSellSideSweep(
 {
    return
       sweep.valid &&
-      sweep.type == LIQUIDITY_SELL_SIDE;
+      (sweep.type == LIQUIDITY_SELL_SIDE ||
+       sweep.type == LIQUIDITY_EQUAL_LOW ||
+       sweep.type == LIQUIDITY_PREVIOUS_DAY_LOW ||
+       sweep.type == LIQUIDITY_PREVIOUS_WEEK_LOW);
 }
 
 
-//====================================================================
-// TEXT HELPERS
-//====================================================================
+//==================================================================
+// TEXT
+//==================================================================
 
 string LiquidityTypeToString(
    ENUM_LIQUIDITY_TYPE type
@@ -600,26 +820,27 @@ string LiquidityTypeToString(
       case LIQUIDITY_SELL_SIDE:
          return "SELL-SIDE LIQUIDITY";
 
+      case LIQUIDITY_EQUAL_HIGH:
+         return "EQUAL HIGHS";
+
+      case LIQUIDITY_EQUAL_LOW:
+         return "EQUAL LOWS";
+
+      case LIQUIDITY_PREVIOUS_DAY_HIGH:
+         return "PREVIOUS DAY HIGH";
+
+      case LIQUIDITY_PREVIOUS_DAY_LOW:
+         return "PREVIOUS DAY LOW";
+
+      case LIQUIDITY_PREVIOUS_WEEK_HIGH:
+         return "PREVIOUS WEEK HIGH";
+
+      case LIQUIDITY_PREVIOUS_WEEK_LOW:
+         return "PREVIOUS WEEK LOW";
+
       default:
          return "NONE";
    }
-}
-
-
-string LiquiditySweepDescription(
-   LiquiditySweep &sweep
-)
-{
-   if(!sweep.valid)
-      return "INVALID LIQUIDITY SWEEP";
-
-   return StringFormat(
-      "%s | Liquidity=%f | Extreme=%f | SignalShift=%d",
-      LiquidityTypeToString(sweep.type),
-      sweep.liquidityPrice,
-      sweep.sweepExtreme,
-      sweep.signalShift
-   );
 }
 
 
