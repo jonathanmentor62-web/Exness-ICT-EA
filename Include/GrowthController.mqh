@@ -1,23 +1,30 @@
 //+------------------------------------------------------------------+
 //| GrowthController.mqh                                             |
-//| Dynamic 30-day account growth target                             |
+//| Gold EA - advisory account-growth controller                     |
 //+------------------------------------------------------------------+
-#ifndef __EXNESS_ICT_GROWTH_CONTROLLER_MQH__
-#define __EXNESS_ICT_GROWTH_CONTROLLER_MQH__
+#ifndef __EXNESS_GOLD_GROWTH_CONTROLLER_MQH__
+#define __EXNESS_GOLD_GROWTH_CONTROLLER_MQH__
 
 //==================================================================
 // GROWTH SETTINGS
 //==================================================================
+//
+// IMPORTANT:
+// This controller is an OBJECTIVE/TRACKING system only.
+//
+// It does NOT:
+// - force trades
+// - increase risk
+// - override RiskEngine
+// - override spread protection
+// - override daily-loss protection
+// - override broker limits
+// - guarantee the target
+//
+//==================================================================
 
-// Target multiplier.
-// Example:
-// $5   -> $10,000
-// $20  -> $40,000
-// $100 -> $200,000
-#define GC_TARGET_MULTIPLIER       2000.0
-
-// Growth cycle duration.
-#define GC_TARGET_DAYS             30
+#define GC_TARGET_MULTIPLIER  2000.0
+#define GC_TARGET_DAYS        30
 
 
 //==================================================================
@@ -26,24 +33,24 @@
 
 struct GrowthController
 {
-   bool     initialized;
+   bool initialized;
 
    datetime startTime;
    datetime targetTime;
 
-   double   startingEquity;
-   double   targetEquity;
-   double   currentEquity;
+   double startingEquity;
+   double targetEquity;
+   double currentEquity;
 
-   double   profitRequired;
-   double   profitAchieved;
+   double profitRequired;
+   double profitAchieved;
 
-   double   progressPercent;
+   double progressPercent;
 
-   int      daysElapsed;
-   int      daysRemaining;
+   int daysElapsed;
+   int daysRemaining;
 
-   bool     targetReached;
+   bool targetReached;
 };
 
 
@@ -51,26 +58,139 @@ struct GrowthController
 // RESET
 //==================================================================
 
-void GC_Reset(GrowthController &gc)
+void GC_Reset(
+   GrowthController &gc
+)
 {
-   gc.initialized      = false;
+   gc.initialized=false;
 
-   gc.startTime        = 0;
-   gc.targetTime       = 0;
+   gc.startTime=0;
+   gc.targetTime=0;
 
-   gc.startingEquity   = 0.0;
-   gc.targetEquity     = 0.0;
-   gc.currentEquity    = 0.0;
+   gc.startingEquity=0.0;
+   gc.targetEquity=0.0;
+   gc.currentEquity=0.0;
 
-   gc.profitRequired   = 0.0;
-   gc.profitAchieved   = 0.0;
+   gc.profitRequired=0.0;
+   gc.profitAchieved=0.0;
 
-   gc.progressPercent  = 0.0;
+   gc.progressPercent=0.0;
 
-   gc.daysElapsed      = 0;
-   gc.daysRemaining    = GC_TARGET_DAYS;
+   gc.daysElapsed=0;
+   gc.daysRemaining=GC_TARGET_DAYS;
 
-   gc.targetReached    = false;
+   gc.targetReached=false;
+}
+
+
+//==================================================================
+// GLOBAL VARIABLE NAMES
+//==================================================================
+
+string GC_Key(
+   const string suffix
+)
+{
+   long login=
+      AccountInfoInteger(
+         ACCOUNT_LOGIN
+      );
+
+   return(
+      "EXG_GC_" +
+      IntegerToString(login) +
+      "_" +
+      suffix
+   );
+}
+
+
+//==================================================================
+// LOAD SAVED STATE
+//==================================================================
+
+bool GC_LoadState(
+   GrowthController &gc
+)
+{
+   string keyStart=
+      GC_Key("START");
+
+   string keyEquity=
+      GC_Key("EQUITY");
+
+   string keyTime=
+      GC_Key("TIME");
+
+   if(
+      !GlobalVariableCheck(keyStart) ||
+      !GlobalVariableCheck(keyEquity) ||
+      !GlobalVariableCheck(keyTime)
+   )
+   {
+      return false;
+   }
+
+   double startEquity=
+      GlobalVariableGet(keyStart);
+
+   double targetEquity=
+      GlobalVariableGet(keyEquity);
+
+   datetime startTime=
+      (datetime)
+      GlobalVariableGet(keyTime);
+
+   if(
+      startEquity<=0.0 ||
+      targetEquity<=0.0 ||
+      startTime<=0
+   )
+   {
+      return false;
+   }
+
+   gc.startingEquity=startEquity;
+
+   gc.targetEquity=targetEquity;
+
+   gc.startTime=startTime;
+
+   gc.targetTime=
+      gc.startTime+
+      (GC_TARGET_DAYS*86400);
+
+   gc.initialized=true;
+
+   return true;
+}
+
+
+//==================================================================
+// SAVE STATE
+//==================================================================
+
+void GC_SaveState(
+   const GrowthController &gc
+)
+{
+   if(!gc.initialized)
+      return;
+
+   GlobalVariableSet(
+      GC_Key("START"),
+      gc.startingEquity
+   );
+
+   GlobalVariableSet(
+      GC_Key("EQUITY"),
+      gc.targetEquity
+   );
+
+   GlobalVariableSet(
+      GC_Key("TIME"),
+      (double)gc.startTime
+   );
 }
 
 
@@ -85,37 +205,67 @@ bool GC_Initialize(
 {
    GC_Reset(gc);
 
-   if(startingEquity <= 0.0)
+   if(startingEquity<=0.0)
       return false;
 
-   gc.initialized    = true;
 
-   gc.startTime      = TimeCurrent();
+   // ---------------------------------------------------------------
+   // Try to restore an existing 30-day cycle.
+   // ---------------------------------------------------------------
 
-   gc.targetTime     =
-      gc.startTime + (GC_TARGET_DAYS * 86400);
+   if(GC_LoadState(gc))
+   {
+      GC_Update(
+         gc,
+         startingEquity
+      );
 
-   gc.startingEquity = startingEquity;
+      return true;
+   }
 
-   // Dynamic target:
-   //
-   // Starting Equity × 2,000
-   //
-   // $5  -> $10,000
-   // $20 -> $40,000
-   // $100 -> $200,000
 
-   gc.targetEquity =
-      gc.startingEquity * GC_TARGET_MULTIPLIER;
+   // ---------------------------------------------------------------
+   // Start a new cycle.
+   // ---------------------------------------------------------------
 
-   gc.currentEquity =
+   gc.initialized=true;
+
+   gc.startTime=
+      TimeCurrent();
+
+   gc.targetTime=
+      gc.startTime+
+      (GC_TARGET_DAYS*86400);
+
+   gc.startingEquity=
       startingEquity;
 
-   gc.profitRequired =
-      gc.targetEquity - gc.startingEquity;
+   gc.targetEquity=
+      gc.startingEquity*
+      GC_TARGET_MULTIPLIER;
 
-   gc.profitAchieved =
-      0.0;
+   gc.currentEquity=
+      startingEquity;
+
+   gc.profitRequired=
+      MathMax(
+         0.0,
+         gc.targetEquity-
+         gc.startingEquity
+      );
+
+   gc.profitAchieved=0.0;
+
+   gc.progressPercent=0.0;
+
+   gc.daysElapsed=0;
+
+   gc.daysRemaining=
+      GC_TARGET_DAYS;
+
+   gc.targetReached=false;
+
+   GC_SaveState(gc);
 
    return true;
 }
@@ -133,38 +283,50 @@ bool GC_Update(
    if(!gc.initialized)
       return false;
 
-   gc.currentEquity = currentEquity;
+   if(currentEquity<=0.0)
+      return false;
 
-   gc.profitAchieved =
-      gc.currentEquity - gc.startingEquity;
+   gc.currentEquity=
+      currentEquity;
 
-   gc.profitRequired =
+   gc.profitAchieved=
+      gc.currentEquity-
+      gc.startingEquity;
+
+   gc.profitRequired=
       MathMax(
          0.0,
-         gc.targetEquity - gc.startingEquity
+         gc.targetEquity-
+         gc.startingEquity
       );
 
 
-   //===============================================================
-   // TARGET REACHED
-   //===============================================================
+   // ---------------------------------------------------------------
+   // Target
+   // ---------------------------------------------------------------
 
-   if(gc.currentEquity >= gc.targetEquity)
+   if(
+      gc.currentEquity>=
+      gc.targetEquity
+   )
    {
-      gc.targetReached = true;
-      gc.progressPercent = 100.0;
+      gc.targetReached=true;
+      gc.progressPercent=100.0;
    }
    else
    {
-      gc.targetReached = false;
+      gc.targetReached=false;
 
-      if(gc.profitRequired > 0.0)
+      if(gc.profitRequired>0.0)
       {
-         gc.progressPercent =
-            (gc.profitAchieved / gc.profitRequired)
-            * 100.0;
+         gc.progressPercent=
+            (
+               gc.profitAchieved/
+               gc.profitRequired
+            )*
+            100.0;
 
-         gc.progressPercent =
+         gc.progressPercent=
             MathMax(
                0.0,
                MathMin(
@@ -175,42 +337,55 @@ bool GC_Update(
       }
       else
       {
-         gc.progressPercent = 0.0;
+         gc.progressPercent=0.0;
       }
    }
 
 
-   //===============================================================
-   // TIME PROGRESS
-   //===============================================================
+   // ---------------------------------------------------------------
+   // Time
+   // ---------------------------------------------------------------
 
-   datetime now = TimeCurrent();
+   datetime now=
+      TimeCurrent();
 
-   long elapsedSeconds =
-      (long)(now - gc.startTime);
+   long elapsedSeconds=
+      (long)(
+         now-
+         gc.startTime
+      );
 
-   long remainingSeconds =
-      (long)(gc.targetTime - now);
+   long remainingSeconds=
+      (long)(
+         gc.targetTime-
+         now
+      );
 
-   if(elapsedSeconds < 0)
-      elapsedSeconds = 0;
+   if(elapsedSeconds<0)
+      elapsedSeconds=0;
 
-   if(remainingSeconds < 0)
-      remainingSeconds = 0;
+   if(remainingSeconds<0)
+      remainingSeconds=0;
 
+   gc.daysElapsed=
+      (int)(
+         elapsedSeconds/
+         86400
+      );
 
-   gc.daysElapsed =
-      (int)(elapsedSeconds / 86400);
+   if(gc.daysElapsed>
+      GC_TARGET_DAYS)
+   {
+      gc.daysElapsed=
+         GC_TARGET_DAYS;
+   }
 
-   gc.daysRemaining =
-      GC_TARGET_DAYS - gc.daysElapsed;
+   gc.daysRemaining=
+      GC_TARGET_DAYS-
+      gc.daysElapsed;
 
-   if(gc.daysElapsed > GC_TARGET_DAYS)
-      gc.daysElapsed = GC_TARGET_DAYS;
-
-   if(gc.daysRemaining < 0)
-      gc.daysRemaining = 0;
-
+   if(gc.daysRemaining<0)
+      gc.daysRemaining=0;
 
    return true;
 }
@@ -229,7 +404,7 @@ bool GC_TargetReached(
 
 
 //==================================================================
-// GET CURRENT PROGRESS
+// PROGRESS
 //==================================================================
 
 double GC_GetProgressPercent(
@@ -241,7 +416,7 @@ double GC_GetProgressPercent(
 
 
 //==================================================================
-// GET TARGET
+// TARGET EQUITY
 //==================================================================
 
 double GC_GetTargetEquity(
@@ -253,7 +428,7 @@ double GC_GetTargetEquity(
 
 
 //==================================================================
-// GET STARTING EQUITY
+// STARTING EQUITY
 //==================================================================
 
 double GC_GetStartingEquity(
@@ -265,7 +440,7 @@ double GC_GetStartingEquity(
 
 
 //==================================================================
-// GET CURRENT EQUITY
+// CURRENT EQUITY
 //==================================================================
 
 double GC_GetCurrentEquity(
@@ -277,7 +452,7 @@ double GC_GetCurrentEquity(
 
 
 //==================================================================
-// GET REQUIRED PROFIT
+// REQUIRED PROFIT
 //==================================================================
 
 double GC_GetProfitRequired(
@@ -289,7 +464,7 @@ double GC_GetProfitRequired(
 
 
 //==================================================================
-// GET ACHIEVED PROFIT
+// ACHIEVED PROFIT
 //==================================================================
 
 double GC_GetProfitAchieved(
@@ -301,7 +476,7 @@ double GC_GetProfitAchieved(
 
 
 //==================================================================
-// GET DAYS REMAINING
+// DAYS REMAINING
 //==================================================================
 
 int GC_GetDaysRemaining(
@@ -313,7 +488,7 @@ int GC_GetDaysRemaining(
 
 
 //==================================================================
-// GET DAYS ELAPSED
+// DAYS ELAPSED
 //==================================================================
 
 int GC_GetDaysElapsed(
@@ -325,18 +500,12 @@ int GC_GetDaysElapsed(
 
 
 //==================================================================
-// GET REQUIRED DAILY GROWTH
+// REQUIRED DAILY GROWTH
 //==================================================================
 //
-// This calculates the average compounded daily growth required
-// from the CURRENT equity to reach the TARGET by the deadline.
-//
-// It is a planning metric only.
-//
-// It DOES NOT override the risk engine.
-// It DOES NOT force trades.
-// It DOES NOT increase risk automatically.
-//
+// Advisory calculation only.
+// It NEVER changes risk or trade frequency.
+//==================================================================
 
 double GC_GetRequiredDailyGrowth(
    const GrowthController &gc
@@ -348,25 +517,28 @@ double GC_GetRequiredDailyGrowth(
    if(gc.targetReached)
       return 0.0;
 
-   if(gc.currentEquity <= 0.0)
+   if(gc.currentEquity<=0.0)
       return 0.0;
 
-   if(gc.daysRemaining <= 0)
+   if(gc.daysRemaining<=0)
       return 0.0;
 
-   double ratio =
-      gc.targetEquity / gc.currentEquity;
+   double ratio=
+      gc.targetEquity/
+      gc.currentEquity;
 
-   if(ratio <= 1.0)
+   if(ratio<=1.0)
       return 0.0;
 
-   double dailyGrowth =
+   double dailyGrowth=
       MathPow(
          ratio,
-         1.0 / (double)gc.daysRemaining
-      ) - 1.0;
+         1.0/
+         (double)gc.daysRemaining
+      )-
+      1.0;
 
-   return dailyGrowth * 100.0;
+   return dailyGrowth*100.0;
 }
 
 
@@ -380,22 +552,39 @@ void GC_PrintStatus(
 {
    if(!gc.initialized)
    {
-      Print("[GROWTH] Controller not initialized.");
+      Print(
+         "[GROWTH] Controller not initialized."
+      );
+
       return;
    }
 
    Print(
       "[GROWTH] Starting=$",
-      DoubleToString(gc.startingEquity, 2),
+      DoubleToString(
+         gc.startingEquity,
+         2
+      ),
       " | Target=$",
-      DoubleToString(gc.targetEquity, 2),
+      DoubleToString(
+         gc.targetEquity,
+         2
+      ),
       " | Current=$",
-      DoubleToString(gc.currentEquity, 2),
+      DoubleToString(
+         gc.currentEquity,
+         2
+      ),
       " | Progress=",
-      DoubleToString(gc.progressPercent, 2),
+      DoubleToString(
+         gc.progressPercent,
+         2
+      ),
       "%",
       " | Days remaining=",
-      IntegerToString(gc.daysRemaining),
+      IntegerToString(
+         gc.daysRemaining
+      ),
       " | Required daily growth=",
       DoubleToString(
          GC_GetRequiredDailyGrowth(gc),
@@ -407,7 +596,7 @@ void GC_PrintStatus(
 
 
 //==================================================================
-// TARGET MULTIPLIER INFORMATION
+// INFORMATION
 //==================================================================
 
 double GC_GetTargetMultiplier()
@@ -416,14 +605,9 @@ double GC_GetTargetMultiplier()
 }
 
 
-//==================================================================
-// TARGET DURATION
-//==================================================================
-
 int GC_GetTargetDays()
 {
    return GC_TARGET_DAYS;
 }
-
 
 #endif
