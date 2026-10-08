@@ -1,11 +1,12 @@
 //+------------------------------------------------------------------+
 //| ConfluenceEngine.mqh                                             |
-//| Gold Multi-Strategy EA - Multi-Timeframe Confluence              |
+//| Gold Multi-Strategy EA - Unified Confluence Engine               |
 //+------------------------------------------------------------------+
 #ifndef __EXNESS_GOLD_CONFLUENCE_ENGINE_MQH__
 #define __EXNESS_GOLD_CONFLUENCE_ENGINE_MQH__
 
 #include "Config.mqh"
+#include "RiskEngine.mqh"
 #include "StrategySignal.mqh"
 #include "StrategyEngine.mqh"
 #include "MarketStructure.mqh"
@@ -14,6 +15,14 @@
 #include "FVG.mqh"
 #include "OrderBlock.mqh"
 #include "M5Confirmation.mqh"
+#include "BreakoutRetest.mqh"
+#include "AdvancedBlocks.mqh"
+#include "SessionEngine.mqh"
+#include "VolatilityEngine.mqh"
+#include "PriceActionEngine.mqh"
+#include "TrendEngine.mqh"
+#include "ReversalEngine.mqh"
+#include "TradePlanEngine.mqh"
 
 //====================================================================
 // CONFLUENCE RESULT
@@ -29,41 +38,60 @@ struct ConfluenceResult
    double score;
    double confidence;
 
-   // Higher-timeframe confirmation
+   // Multi-timeframe confirmation
    bool h4Confirmed;
    bool h1Confirmed;
    bool m15Confirmed;
    bool m5Confirmed;
 
-   // ICT / SMC confirmation
+   // ICT / SMC
    bool liquidityConfirmed;
    bool structureConfirmed;
    bool displacementConfirmed;
    bool mssConfirmed;
    bool bosConfirmed;
+   bool chochConfirmed;
 
+   // Institutional zones
    bool fvgConfirmed;
    bool fvgRetestConfirmed;
 
    bool orderBlockConfirmed;
    bool orderBlockRetestConfirmed;
 
-   // Retest / breakout confirmation
+   bool breakerConfirmed;
+   bool mitigationBlockConfirmed;
+
+   // Breakout / retest
    bool breakoutConfirmed;
    bool retestConfirmed;
    bool failedBreakoutConfirmed;
+
+   // Trend
+   bool trendConfirmed;
+   bool pullbackConfirmed;
+   bool continuationConfirmed;
+
+   // Reversal
+   bool reversalConfirmed;
+   bool liquidityReversalConfirmed;
+   bool exhaustionConfirmed;
 
    // Price action
    bool engulfingConfirmed;
    bool rejectionConfirmed;
    bool momentumConfirmed;
+   bool insideBarConfirmed;
 
    // Context
    bool premiumDiscountConfirmed;
    bool sessionConfirmed;
    bool volatilityConfirmed;
 
-   // Price levels
+   // Trade planning
+   bool tradePlanConfirmed;
+   bool riskRewardConfirmed;
+
    double entry;
    double structuralHigh;
    double structuralLow;
@@ -71,10 +99,19 @@ struct ConfluenceResult
    double zoneHigh;
    double zoneLow;
 
+   double stopLoss;
+   double takeProfit;
+   double rewardRisk;
+
+   double planScore;
+
    // Source strategy
    StrategySignal sourceSignal;
 
-   // Diagnostic information
+   // Final trade plan
+   TradePlan tradePlan;
+
+   // Diagnostics
    string reason;
    string evidence;
 };
@@ -106,6 +143,7 @@ void CE_ResetResult(
    result.displacementConfirmed = false;
    result.mssConfirmed = false;
    result.bosConfirmed = false;
+   result.chochConfirmed = false;
 
    result.fvgConfirmed = false;
    result.fvgRetestConfirmed = false;
@@ -113,17 +151,32 @@ void CE_ResetResult(
    result.orderBlockConfirmed = false;
    result.orderBlockRetestConfirmed = false;
 
+   result.breakerConfirmed = false;
+   result.mitigationBlockConfirmed = false;
+
    result.breakoutConfirmed = false;
    result.retestConfirmed = false;
    result.failedBreakoutConfirmed = false;
 
+   result.trendConfirmed = false;
+   result.pullbackConfirmed = false;
+   result.continuationConfirmed = false;
+
+   result.reversalConfirmed = false;
+   result.liquidityReversalConfirmed = false;
+   result.exhaustionConfirmed = false;
+
    result.engulfingConfirmed = false;
    result.rejectionConfirmed = false;
    result.momentumConfirmed = false;
+   result.insideBarConfirmed = false;
 
    result.premiumDiscountConfirmed = false;
    result.sessionConfirmed = false;
    result.volatilityConfirmed = false;
+
+   result.tradePlanConfirmed = false;
+   result.riskRewardConfirmed = false;
 
    result.entry = 0.0;
 
@@ -133,12 +186,53 @@ void CE_ResetResult(
    result.zoneHigh = 0.0;
    result.zoneLow = 0.0;
 
+   result.stopLoss = 0.0;
+   result.takeProfit = 0.0;
+   result.rewardRisk = 0.0;
+   result.planScore = 0.0;
+
    ResetStrategySignal(
       result.sourceSignal
    );
 
+   ResetTradePlan(
+      result.tradePlan
+   );
+
    result.reason = "";
    result.evidence = "";
+}
+
+//====================================================================
+// GOLD CHECK
+//====================================================================
+
+bool CE_IsGold(
+   const string symbol
+)
+{
+   return RE_IsGoldSymbol(
+      symbol
+   );
+}
+
+//====================================================================
+// HISTORY CHECK
+//====================================================================
+
+bool CE_HasHistory(
+   const string symbol,
+   const ENUM_TIMEFRAMES timeframe,
+   const int minimumBars
+)
+{
+   if(minimumBars <= 0)
+      return false;
+
+   return Bars(
+      symbol,
+      timeframe
+   ) >= minimumBars;
 }
 
 //====================================================================
@@ -195,15 +289,20 @@ void CE_AddScore(
    if(evidence != "")
    {
       if(result.evidence == "")
-         result.evidence = evidence;
+      {
+         result.evidence =
+            evidence;
+      }
       else
+      {
          result.evidence +=
             " | " + evidence;
+      }
    }
 }
 
 //====================================================================
-// CONFLUENCE QUALITY
+// QUALITY
 //====================================================================
 
 string CE_Quality(
@@ -226,283 +325,57 @@ string CE_Quality(
 }
 
 //====================================================================
-// BASIC GOLD CHECK
+// DIRECTION VALIDATION
 //====================================================================
 
-bool CE_IsGold(
-   const string symbol
-)
-{
-   string upper = symbol;
-
-   StringToUpper(
-      upper
-   );
-
-   return StringFind(
-      upper,
-      ICT_GOLD_SYMBOL_PREFIX
-   ) == 0;
-}
-
-//====================================================================
-// TIMEFRAME HISTORY CHECK
-//====================================================================
-
-bool CE_HasHistory(
-   const string symbol,
-   const ENUM_TIMEFRAMES timeframe,
-   const int minimumBars
-)
-{
-   if(minimumBars <= 0)
-      return false;
-
-   return Bars(
-      symbol,
-      timeframe
-   ) >= minimumBars;
-}
-//====================================================================
-// H4 STRUCTURE CONFIRMATION
-//====================================================================
-
-bool CE_CheckH4Structure(
-   const string symbol,
+bool CE_DirectionMatches(
    const ENUM_STRATEGY_DIRECTION direction,
-   ConfluenceResult &result
+   const bool bullish
 )
 {
-   MarketStructureState state;
+   if(bullish)
+      return direction ==
+         STRATEGY_DIRECTION_BUY;
 
-   if(!MS_GetState(
-      symbol,
-      ICT_PRIMARY_TF,
-      ICT_STRUCTURE_LOOKBACK,
-      state
-   ))
-      return false;
-
-   if(!state.valid)
-      return false;
-
-   //-----------------------------------------------------------------
-   // BULLISH H4
-   //-----------------------------------------------------------------
-
-   if(
-      direction == STRATEGY_DIRECTION_BUY &&
-      state.bias >= 1
-   )
-   {
-      result.h4Confirmed = true;
-      result.structureConfirmed = true;
-
-      CE_AddScore(
-         result,
-         15.0,
-         "H4 bullish structure"
-      );
-
-      return true;
-   }
-
-   //-----------------------------------------------------------------
-   // BEARISH H4
-   //-----------------------------------------------------------------
-
-   if(
-      direction == STRATEGY_DIRECTION_SELL &&
-      state.bias <= -1
-   )
-   {
-      result.h4Confirmed = true;
-      result.structureConfirmed = true;
-
-      CE_AddScore(
-         result,
-         15.0,
-         "H4 bearish structure"
-      );
-
-      return true;
-   }
-
-   return false;
+   return direction ==
+      STRATEGY_DIRECTION_SELL;
 }
 
 //====================================================================
-// H1 STRUCTURE CONFIRMATION
+// CURRENT MARKET PRICE
 //====================================================================
 
-bool CE_CheckH1Structure(
+double CE_CurrentPrice(
    const string symbol,
-   const ENUM_STRATEGY_DIRECTION direction,
-   ConfluenceResult &result
+   const ENUM_STRATEGY_DIRECTION direction
 )
 {
-   MarketStructureState state;
+   MqlTick tick;
 
-   if(!MS_GetState(
+   if(!SymbolInfoTick(
       symbol,
-      PERIOD_H1,
-      ICT_STRUCTURE_LOOKBACK,
-      state
-   ))
-      return false;
-
-   if(!state.valid)
-      return false;
-
-   //-----------------------------------------------------------------
-   // BULLISH H1
-   //-----------------------------------------------------------------
-
-   if(
-      direction == STRATEGY_DIRECTION_BUY &&
-      state.bias >= 1
-   )
+      tick))
    {
-      result.h1Confirmed = true;
-
-      CE_AddScore(
-         result,
-         10.0,
-         "H1 bullish structure"
-      );
-
-      return true;
+      return 0.0;
    }
 
-   //-----------------------------------------------------------------
-   // BEARISH H1
-   //-----------------------------------------------------------------
-
-   if(
-      direction == STRATEGY_DIRECTION_SELL &&
-      state.bias <= -1
-   )
+   if(direction ==
+      STRATEGY_DIRECTION_BUY)
    {
-      result.h1Confirmed = true;
-
-      CE_AddScore(
-         result,
-         10.0,
-         "H1 bearish structure"
-      );
-
-      return true;
+      return tick.ask;
    }
 
-   return false;
+   if(direction ==
+      STRATEGY_DIRECTION_SELL)
+   {
+      return tick.bid;
+   }
+
+   return (tick.bid + tick.ask) * 0.5;
 }
 
 //====================================================================
-// H1 STRUCTURE BREAK CONFIRMATION
-//====================================================================
-
-bool CE_CheckH1Break(
-   const string symbol,
-   const ENUM_STRATEGY_DIRECTION direction,
-   ConfluenceResult &result
-)
-{
-   StructureSignal signal;
-
-   ResetStructureSignal(
-      signal
-   );
-
-   if(!AnalyzeStructureSignal(
-      symbol,
-      PERIOD_H1,
-      ICT_STRUCTURE_LOOKBACK,
-      signal
-   ))
-      return false;
-
-   if(!signal.valid)
-      return false;
-
-   //-----------------------------------------------------------------
-   // BULLISH H1 MSS / BOS
-   //-----------------------------------------------------------------
-
-   if(
-      direction == STRATEGY_DIRECTION_BUY &&
-      (
-         signal.bullishMSS ||
-         signal.bullishBOS
-      )
-   )
-   {
-      if(signal.bullishMSS)
-      {
-         result.mssConfirmed = true;
-
-         CE_AddScore(
-            result,
-            10.0,
-            "H1 bullish MSS"
-         );
-      }
-
-      if(signal.bullishBOS)
-      {
-         result.bosConfirmed = true;
-
-         CE_AddScore(
-            result,
-            8.0,
-            "H1 bullish BOS"
-         );
-      }
-
-      return true;
-   }
-
-   //-----------------------------------------------------------------
-   // BEARISH H1 MSS / BOS
-   //-----------------------------------------------------------------
-
-   if(
-      direction == STRATEGY_DIRECTION_SELL &&
-      (
-         signal.bearishMSS ||
-         signal.bearishBOS
-      )
-   )
-   {
-      if(signal.bearishMSS)
-      {
-         result.mssConfirmed = true;
-
-         CE_AddScore(
-            result,
-            10.0,
-            "H1 bearish MSS"
-         );
-      }
-
-      if(signal.bearishBOS)
-      {
-         result.bosConfirmed = true;
-
-         CE_AddScore(
-            result,
-            8.0,
-            "H1 bearish BOS"
-         );
-      }
-
-      return true;
-   }
-
-   return false;
-}
-
-//====================================================================
-// APPLY SOURCE STRATEGY
+// SOURCE STRATEGY
 //====================================================================
 
 void CE_ApplySourceSignal(
@@ -513,11 +386,16 @@ void CE_ApplySourceSignal(
    result.sourceSignal =
       source;
 
-   result.direction =
-      source.direction;
+   if(source.direction !=
+      STRATEGY_DIRECTION_NONE)
+   {
+      result.direction =
+         source.direction;
+   }
 
-   result.entry =
-      source.entry;
+   if(source.entry > 0.0)
+      result.entry =
+         source.entry;
 
    result.structuralHigh =
       source.structuralHigh;
@@ -533,162 +411,293 @@ void CE_ApplySourceSignal(
 
    if(source.liquidityConfirmed)
    {
-      result.liquidityConfirmed = true;
+      result.liquidityConfirmed =
+         true;
 
       CE_AddScore(
          result,
-         10.0,
-         "Liquidity confirmed"
-      );
+         8.0,
+         "Source liquidity confirmed");
    }
 
    if(source.displacementConfirmed)
    {
-      result.displacementConfirmed = true;
+      result.displacementConfirmed =
+         true;
 
       CE_AddScore(
          result,
          5.0,
-         "Displacement confirmed"
-      );
+         "Source displacement confirmed");
    }
 
    if(source.mssConfirmed)
    {
-      result.mssConfirmed = true;
+      result.mssConfirmed =
+         true;
 
       CE_AddScore(
          result,
          5.0,
-         "MSS confirmed"
-      );
+         "Source MSS confirmed");
    }
 
    if(source.bosConfirmed)
    {
-      result.bosConfirmed = true;
+      result.bosConfirmed =
+         true;
 
       CE_AddScore(
          result,
-         5.0,
-         "BOS confirmed"
-      );
+         4.0,
+         "Source BOS confirmed");
    }
 
    if(source.fvgPresent)
    {
-      result.fvgConfirmed = true;
+      result.fvgConfirmed =
+         true;
 
       CE_AddScore(
          result,
          5.0,
-         "FVG confirmed"
-      );
+         "Source FVG confirmed");
    }
 
    if(source.fvgRetestConfirmed)
    {
-      result.fvgRetestConfirmed = true;
+      result.fvgRetestConfirmed =
+         true;
+
+      result.retestConfirmed =
+         true;
 
       CE_AddScore(
          result,
          5.0,
-         "FVG retest confirmed"
-      );
+         "Source FVG retest confirmed");
    }
 
    if(source.orderBlockPresent)
    {
-      result.orderBlockConfirmed = true;
+      result.orderBlockConfirmed =
+         true;
 
       CE_AddScore(
          result,
          5.0,
-         "Order block confirmed"
-      );
+         "Source order block confirmed");
    }
 
    if(source.orderBlockRetestConfirmed)
    {
-      result.orderBlockRetestConfirmed = true;
+      result.orderBlockRetestConfirmed =
+         true;
+
+      result.retestConfirmed =
+         true;
 
       CE_AddScore(
          result,
          5.0,
-         "Order-block retest confirmed"
-      );
+         "Source order-block retest confirmed");
    }
 
    if(source.retestConfirmed)
    {
-      result.retestConfirmed = true;
+      result.retestConfirmed =
+         true;
 
       CE_AddScore(
          result,
          5.0,
-         "Retest confirmed"
-      );
+         "Source retest confirmed");
    }
 
    if(source.engulfingConfirmed)
    {
-      result.engulfingConfirmed = true;
+      result.engulfingConfirmed =
+         true;
 
       CE_AddScore(
          result,
          3.0,
-         "Engulfing confirmed"
-      );
+         "Source engulfing confirmed");
    }
 
    if(source.rejectionConfirmed)
    {
-      result.rejectionConfirmed = true;
+      result.rejectionConfirmed =
+         true;
 
       CE_AddScore(
          result,
          3.0,
-         "Rejection confirmed"
-      );
+         "Source rejection confirmed");
    }
 
    if(source.momentumConfirmed)
    {
-      result.momentumConfirmed = true;
+      result.momentumConfirmed =
+         true;
 
       CE_AddScore(
          result,
          3.0,
-         "Momentum confirmed"
-      );
+         "Source momentum confirmed");
    }
 
    if(source.premiumDiscountConfirmed)
    {
-      result.premiumDiscountConfirmed = true;
+      result.premiumDiscountConfirmed =
+         true;
 
       CE_AddScore(
          result,
          3.0,
-         "Premium/discount confirmed"
-      );
+         "Premium/discount confirmed");
    }
 
    if(source.sessionConfirmed)
-   {
       result.sessionConfirmed = true;
-   }
 
    if(source.volatilityConfirmed)
-   {
       result.volatilityConfirmed = true;
-   }
 }
+
 //====================================================================
-// M15 DIRECTIONAL CONFIRMATION
+// BASIC DIRECTIONAL STRUCTURE
 //====================================================================
 
-bool CE_CheckM15Confirmation(
+bool CE_CheckStructure(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   const ENUM_TIMEFRAMES timeframe,
+   const double points,
+   ConfluenceResult &result
+)
+{
+   MarketStructureState state;
+
+   if(!MS_GetState(
+      symbol,
+      timeframe,
+      ICT_STRUCTURE_LOOKBACK,
+      state))
+   {
+      return false;
+   }
+
+   if(!state.valid)
+      return false;
+
+   if(direction ==
+      STRATEGY_DIRECTION_BUY)
+   {
+      if(state.bias >= 1)
+      {
+         result.structureConfirmed =
+            true;
+
+         CE_AddScore(
+            result,
+            points,
+            "Bullish " +
+            EnumToString(timeframe) +
+            " structure");
+
+         return true;
+      }
+   }
+
+   if(direction ==
+      STRATEGY_DIRECTION_SELL)
+   {
+      if(state.bias <= -1)
+      {
+         result.structureConfirmed =
+            true;
+
+         CE_AddScore(
+            result,
+            points,
+            "Bearish " +
+            EnumToString(timeframe) +
+            " structure");
+
+         return true;
+      }
+   }
+
+   return false;
+}
+
+//====================================================================
+// H4 CONFIRMATION
+//====================================================================
+
+bool CE_CheckH4(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   if(!CE_CheckStructure(
+      symbol,
+      direction,
+      PERIOD_H4,
+      15.0,
+      result))
+   {
+      return false;
+   }
+
+   result.h4Confirmed =
+      true;
+
+   CE_AddScore(
+      result,
+      0.0,
+      "H4 directional confirmation");
+
+   return true;
+}
+
+//====================================================================
+// H1 CONFIRMATION
+//====================================================================
+
+bool CE_CheckH1(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   if(!CE_CheckStructure(
+      symbol,
+      direction,
+      PERIOD_H1,
+      10.0,
+      result))
+   {
+      return false;
+   }
+
+   result.h1Confirmed =
+      true;
+
+   CE_AddScore(
+      result,
+      0.0,
+      "H1 directional confirmation");
+
+   return true;
+}
+//====================================================================
+// H1 STRUCTURE BREAK
+//====================================================================
+
+bool CE_CheckH1Break(
    const string symbol,
    const ENUM_STRATEGY_DIRECTION direction,
    ConfluenceResult &result
@@ -700,21 +709,156 @@ bool CE_CheckM15Confirmation(
 
    if(!AnalyzeStructureSignal(
       symbol,
-      ICT_CONFIRM_TF,
+      PERIOD_H1,
       ICT_STRUCTURE_LOOKBACK,
-      signal
-   ))
+      signal))
+   {
       return false;
+   }
 
    if(!signal.valid)
       return false;
 
-   //-----------------------------------------------------------------
-   // BULLISH M15
-   //-----------------------------------------------------------------
-
-   if(direction == STRATEGY_DIRECTION_BUY)
+   if(direction ==
+      STRATEGY_DIRECTION_BUY)
    {
+      if(signal.bullishMSS)
+      {
+         result.mssConfirmed = true;
+
+         CE_AddScore(
+            result,
+            10.0,
+            "H1 bullish MSS");
+      }
+
+      if(signal.bullishBOS)
+      {
+         result.bosConfirmed = true;
+
+         CE_AddScore(
+            result,
+            7.0,
+            "H1 bullish BOS");
+      }
+
+      if(signal.bullishDisplacement)
+      {
+         result.displacementConfirmed = true;
+
+         CE_AddScore(
+            result,
+            5.0,
+            "H1 bullish displacement");
+      }
+
+      return
+         signal.bullishMSS ||
+         signal.bullishBOS ||
+         signal.bullishDisplacement;
+   }
+
+   if(direction ==
+      STRATEGY_DIRECTION_SELL)
+   {
+      if(signal.bearishMSS)
+      {
+         result.mssConfirmed = true;
+
+         CE_AddScore(
+            result,
+            10.0,
+            "H1 bearish MSS");
+      }
+
+      if(signal.bearishBOS)
+      {
+         result.bosConfirmed = true;
+
+         CE_AddScore(
+            result,
+            7.0,
+            "H1 bearish BOS");
+      }
+
+      if(signal.bearishDisplacement)
+      {
+         result.displacementConfirmed = true;
+
+         CE_AddScore(
+            result,
+            5.0,
+            "H1 bearish displacement");
+      }
+
+      return
+         signal.bearishMSS ||
+         signal.bearishBOS ||
+         signal.bearishDisplacement;
+   }
+
+   return false;
+}
+
+//====================================================================
+// M15 STRUCTURE CONFIRMATION
+//====================================================================
+
+bool CE_CheckM15(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   StructureSignal signal;
+
+   ResetStructureSignal(signal);
+
+   if(!AnalyzeStructureSignal(
+      symbol,
+      PERIOD_M15,
+      ICT_STRUCTURE_LOOKBACK,
+      signal))
+   {
+      return false;
+   }
+
+   if(!signal.valid)
+      return false;
+
+   if(direction ==
+      STRATEGY_DIRECTION_BUY)
+   {
+      if(signal.bullishMSS)
+      {
+         result.mssConfirmed = true;
+
+         CE_AddScore(
+            result,
+            10.0,
+            "M15 bullish MSS");
+      }
+
+      if(signal.bullishBOS)
+      {
+         result.bosConfirmed = true;
+
+         CE_AddScore(
+            result,
+            7.0,
+            "M15 bullish BOS");
+      }
+
+      if(signal.bullishDisplacement)
+      {
+         result.displacementConfirmed = true;
+
+         CE_AddScore(
+            result,
+            5.0,
+            "M15 bullish displacement");
+      }
+
       if(
          signal.bullishMSS ||
          signal.bullishBOS ||
@@ -722,50 +866,43 @@ bool CE_CheckM15Confirmation(
       )
       {
          result.m15Confirmed = true;
-
-         if(signal.bullishMSS)
-         {
-            result.mssConfirmed = true;
-
-            CE_AddScore(
-               result,
-               10.0,
-               "M15 bullish MSS"
-            );
-         }
-
-         if(signal.bullishBOS)
-         {
-            result.bosConfirmed = true;
-
-            CE_AddScore(
-               result,
-               7.0,
-               "M15 bullish BOS"
-            );
-         }
-
-         if(signal.bullishDisplacement)
-         {
-            result.displacementConfirmed = true;
-
-            CE_AddScore(
-               result,
-               5.0,
-               "M15 bullish displacement"
-            );
-         }
-
          return true;
       }
    }
 
-   //-----------------------------------------------------------------
-   // BEARISH M15
-   //-----------------------------------------------------------------
-
-   if(direction == STRATEGY_DIRECTION_SELL)
+   if(direction ==
+      STRATEGY_DIRECTION_SELL)
    {
+      if(signal.bearishMSS)
+      {
+         result.mssConfirmed = true;
+
+         CE_AddScore(
+            result,
+            10.0,
+            "M15 bearish MSS");
+      }
+
+      if(signal.bearishBOS)
+      {
+         result.bosConfirmed = true;
+
+         CE_AddScore(
+            result,
+            7.0,
+            "M15 bearish BOS");
+      }
+
+      if(signal.bearishDisplacement)
+      {
+         result.displacementConfirmed = true;
+
+         CE_AddScore(
+            result,
+            5.0,
+            "M15 bearish displacement");
+      }
+
       if(
          signal.bearishMSS ||
          signal.bearishBOS ||
@@ -773,40 +910,6 @@ bool CE_CheckM15Confirmation(
       )
       {
          result.m15Confirmed = true;
-
-         if(signal.bearishMSS)
-         {
-            result.mssConfirmed = true;
-
-            CE_AddScore(
-               result,
-               10.0,
-               "M15 bearish MSS"
-            );
-         }
-
-         if(signal.bearishBOS)
-         {
-            result.bosConfirmed = true;
-
-            CE_AddScore(
-               result,
-               7.0,
-               "M15 bearish BOS"
-            );
-         }
-
-         if(signal.bearishDisplacement)
-         {
-            result.displacementConfirmed = true;
-
-            CE_AddScore(
-               result,
-               5.0,
-               "M15 bearish displacement"
-            );
-         }
-
          return true;
       }
    }
@@ -815,10 +918,10 @@ bool CE_CheckM15Confirmation(
 }
 
 //====================================================================
-// M15 LIQUIDITY CONFIRMATION
+// M15 LIQUIDITY
 //====================================================================
 
-bool CE_CheckM15Liquidity(
+bool CE_CheckLiquidity(
    const string symbol,
    const ENUM_STRATEGY_DIRECTION direction,
    ConfluenceResult &result
@@ -826,39 +929,44 @@ bool CE_CheckM15Liquidity(
 {
    LiquiditySweep sweep;
 
-   ResetLiquiditySweep(sweep);
+   ResetLiquiditySweep(
+      sweep);
 
    bool bullish =
-      direction == STRATEGY_DIRECTION_BUY;
+      direction ==
+      STRATEGY_DIRECTION_BUY;
 
-   bool found =
-      DetectLiquiditySweep(
-         symbol,
-         ICT_CONFIRM_TF,
-         bullish,
-         ICT_M15_CONFIRM_MAX_BARS,
-         sweep
-      );
+   if(!DetectLiquiditySweep(
+      symbol,
+      PERIOD_M15,
+      bullish,
+      ICT_M15_CONFIRM_MAX_BARS,
+      sweep))
+   {
+      return false;
+   }
 
-   if(!found || !sweep.valid)
+   if(!sweep.valid)
       return false;
 
-   result.liquidityConfirmed = true;
+   result.liquidityConfirmed =
+      true;
 
    CE_AddScore(
       result,
-      8.0,
-      "M15 liquidity sweep"
-   );
+      10.0,
+      bullish
+      ? "Bullish M15 liquidity sweep"
+      : "Bearish M15 liquidity sweep");
 
    return true;
 }
 
 //====================================================================
-// M15 FVG CONFIRMATION
+// FVG CONFIRMATION
 //====================================================================
 
-bool CE_CheckM15FVG(
+bool CE_CheckFVG(
    const string symbol,
    const ENUM_STRATEGY_DIRECTION direction,
    ConfluenceResult &result
@@ -869,39 +977,40 @@ bool CE_CheckM15FVG(
    ResetFVG(fvg);
 
    bool bullish =
-      direction == STRATEGY_DIRECTION_BUY;
+      direction ==
+      STRATEGY_DIRECTION_BUY;
 
-   bool found =
-      FindDirectionalFVG(
-         symbol,
-         ICT_CONFIRM_TF,
-         bullish,
-         ICT_M15_CONFIRM_MAX_BARS,
-         fvg
-      );
+   if(!FindDirectionalFVG(
+      symbol,
+      PERIOD_M15,
+      bullish,
+      ICT_FVG_LOOKBACK,
+      fvg))
+   {
+      return false;
+   }
 
-   if(!found || !fvg.valid)
+   if(!fvg.valid)
       return false;
 
-   result.fvgConfirmed = true;
+   result.fvgConfirmed =
+      true;
 
    CE_AddScore(
       result,
-      5.0,
-      "M15 FVG"
-   );
-
-   //-----------------------------------------------------------------
-   // CURRENT PRICE INSIDE FVG
-   //-----------------------------------------------------------------
+      7.0,
+      bullish
+      ? "Bullish M15 FVG"
+      : "Bearish M15 FVG");
 
    MqlTick tick;
 
    if(!SymbolInfoTick(
       symbol,
-      tick
-   ))
+      tick))
+   {
       return true;
+   }
 
    double price =
       bullish
@@ -910,28 +1019,34 @@ bool CE_CheckM15FVG(
 
    if(IsPriceInsideFVG(
       fvg,
-      price
-   ))
+      price))
    {
-      result.fvgRetestConfirmed = true;
+      result.fvgRetestConfirmed =
+         true;
 
-      result.retestConfirmed = true;
+      result.retestConfirmed =
+         true;
+
+      result.zoneHigh =
+         fvg.upper;
+
+      result.zoneLow =
+         fvg.lower;
 
       CE_AddScore(
          result,
-         5.0,
-         "M15 FVG retest"
-      );
+         8.0,
+         "FVG retest at entry zone");
    }
 
    return true;
 }
 
 //====================================================================
-// M15 ORDER-BLOCK CONFIRMATION
+// ORDER BLOCK CONFIRMATION
 //====================================================================
 
-bool CE_CheckM15OrderBlock(
+bool CE_CheckOrderBlock(
    const string symbol,
    const ENUM_STRATEGY_DIRECTION direction,
    ConfluenceResult &result
@@ -945,39 +1060,40 @@ bool CE_CheckM15OrderBlock(
    ResetOrderBlock(ob);
 
    bool bullish =
-      direction == STRATEGY_DIRECTION_BUY;
+      direction ==
+      STRATEGY_DIRECTION_BUY;
 
-   bool found =
-      FindDirectionalOrderBlock(
-         symbol,
-         ICT_CONFIRM_TF,
-         bullish,
-         ICT_OB_LOOKBACK,
-         ob
-      );
+   if(!FindDirectionalOrderBlock(
+      symbol,
+      PERIOD_M15,
+      bullish,
+      ICT_OB_LOOKBACK,
+      ob))
+   {
+      return false;
+   }
 
-   if(!found || !ob.valid)
+   if(!ob.valid)
       return false;
 
-   result.orderBlockConfirmed = true;
+   result.orderBlockConfirmed =
+      true;
 
    CE_AddScore(
       result,
-      5.0,
-      "M15 order block"
-   );
-
-   //-----------------------------------------------------------------
-   // CURRENT PRICE INSIDE ORDER BLOCK
-   //-----------------------------------------------------------------
+      7.0,
+      bullish
+      ? "Bullish M15 order block"
+      : "Bearish M15 order block");
 
    MqlTick tick;
 
    if(!SymbolInfoTick(
       symbol,
-      tick
-   ))
+      tick))
+   {
       return true;
+   }
 
    double price =
       bullish
@@ -986,27 +1102,34 @@ bool CE_CheckM15OrderBlock(
 
    if(IsPriceInsideOrderBlock(
       ob,
-      price
-   ))
+      price))
    {
-      result.orderBlockRetestConfirmed = true;
+      result.orderBlockRetestConfirmed =
+         true;
 
-      result.retestConfirmed = true;
+      result.retestConfirmed =
+         true;
+
+      result.zoneHigh =
+         ob.upper;
+
+      result.zoneLow =
+         ob.lower;
 
       CE_AddScore(
          result,
-         5.0,
-         "M15 order-block retest"
-      );
+         8.0,
+         "Order-block retest at entry zone");
    }
 
    return true;
 }
+
 //====================================================================
-// M5 ENTRY CONFIRMATION
+// M5 CONFIRMATION
 //====================================================================
 
-bool CE_CheckM5Confirmation(
+bool CE_CheckM5(
    const string symbol,
    const ENUM_STRATEGY_DIRECTION direction,
    ConfluenceResult &result
@@ -1015,41 +1138,21 @@ bool CE_CheckM5Confirmation(
    M5Confirmation confirmation;
 
    ResetM5Confirmation(
-      confirmation
-   );
+      confirmation);
 
    if(!AnalyzeM5Confirmation(
       symbol,
-      direction == STRATEGY_DIRECTION_BUY,
-      ICT_M5_CONFIRM_MAX_BARS,
-      confirmation
-   ))
+      direction,
+      confirmation))
+   {
       return false;
+   }
 
    if(!confirmation.valid)
       return false;
 
-   //-----------------------------------------------------------------
-   // DIRECTION CHECK
-   //-----------------------------------------------------------------
-
-   if(
-      direction == STRATEGY_DIRECTION_BUY &&
-      !confirmation.bullish
-   )
-      return false;
-
-   if(
-      direction == STRATEGY_DIRECTION_SELL &&
-      !confirmation.bearish
-   )
-      return false;
-
-   result.m5Confirmed = true;
-
-   //-----------------------------------------------------------------
-   // M5 STRUCTURE
-   //-----------------------------------------------------------------
+   result.m5Confirmed =
+      true;
 
    if(confirmation.mss)
    {
@@ -1057,9 +1160,8 @@ bool CE_CheckM5Confirmation(
 
       CE_AddScore(
          result,
-         10.0,
-         "M5 MSS"
-      );
+         8.0,
+         "M5 MSS confirmation");
    }
 
    if(confirmation.bos)
@@ -1068,9 +1170,8 @@ bool CE_CheckM5Confirmation(
 
       CE_AddScore(
          result,
-         7.0,
-         "M5 BOS"
-      );
+         6.0,
+         "M5 BOS confirmation");
    }
 
    if(confirmation.displacement)
@@ -1080,13 +1181,8 @@ bool CE_CheckM5Confirmation(
       CE_AddScore(
          result,
          5.0,
-         "M5 displacement"
-      );
+         "M5 displacement");
    }
-
-   //-----------------------------------------------------------------
-   // M5 RETEST
-   //-----------------------------------------------------------------
 
    if(confirmation.retest)
    {
@@ -1094,14 +1190,9 @@ bool CE_CheckM5Confirmation(
 
       CE_AddScore(
          result,
-         10.0,
-         "M5 retest"
-      );
+         8.0,
+         "M5 retest confirmation");
    }
-
-   //-----------------------------------------------------------------
-   // M5 FVG
-   //-----------------------------------------------------------------
 
    if(confirmation.fvgPresent)
    {
@@ -1109,26 +1200,19 @@ bool CE_CheckM5Confirmation(
 
       CE_AddScore(
          result,
-         5.0,
-         "M5 FVG"
-      );
+         4.0,
+         "M5 FVG confirmation");
    }
 
    if(confirmation.fvgRetest)
    {
       result.fvgRetestConfirmed = true;
-      result.retestConfirmed = true;
 
       CE_AddScore(
          result,
-         7.0,
-         "M5 FVG retest"
-      );
+         5.0,
+         "M5 FVG retest");
    }
-
-   //-----------------------------------------------------------------
-   // M5 PRICE ACTION
-   //-----------------------------------------------------------------
 
    if(confirmation.engulfing)
    {
@@ -1136,9 +1220,8 @@ bool CE_CheckM5Confirmation(
 
       CE_AddScore(
          result,
-         5.0,
-         "M5 engulfing"
-      );
+         4.0,
+         "M5 engulfing");
    }
 
    if(confirmation.rejection)
@@ -1147,9 +1230,8 @@ bool CE_CheckM5Confirmation(
 
       CE_AddScore(
          result,
-         5.0,
-         "M5 rejection"
-      );
+         4.0,
+         "M5 rejection");
    }
 
    if(confirmation.momentum)
@@ -1158,288 +1240,1013 @@ bool CE_CheckM5Confirmation(
 
       CE_AddScore(
          result,
-         5.0,
-         "M5 momentum"
-      );
+         4.0,
+         "M5 momentum");
    }
 
-   //-----------------------------------------------------------------
-   // ENTRY ZONE
-   //-----------------------------------------------------------------
+   result.zoneHigh =
+      confirmation.entryZoneHigh;
+
+   result.zoneLow =
+      confirmation.entryZoneLow;
+
+   return true;
+}
+
+//====================================================================
+// PREMIUM / DISCOUNT
+//====================================================================
+
+bool CE_CheckPremiumDiscount(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   double high =
+      GetRecentSwingHighPrice(
+         symbol,
+         PERIOD_H4);
+
+   double low =
+      GetRecentSwingLowPrice(
+         symbol,
+         PERIOD_H4);
+
+   if(high <= 0.0 ||
+      low <= 0.0 ||
+      high <= low)
+   {
+      return false;
+   }
+
+   double midpoint =
+      (high + low) * 0.5;
+
+   double price =
+      CE_CurrentPrice(
+         symbol,
+         direction);
+
+   if(price <= 0.0)
+      return false;
 
    if(
-      confirmation.entryZoneHigh > 0.0 &&
-      confirmation.entryZoneLow > 0.0 &&
-      confirmation.entryZoneHigh >=
-      confirmation.entryZoneLow
+      direction ==
+      STRATEGY_DIRECTION_BUY &&
+      price <= midpoint
    )
    {
-      result.zoneHigh =
-         confirmation.entryZoneHigh;
+      result.premiumDiscountConfirmed =
+         true;
 
+      CE_AddScore(
+         result,
+         5.0,
+         "BUY in discount");
+      
+      return true;
+   }
+
+   if(
+      direction ==
+      STRATEGY_DIRECTION_SELL &&
+      price >= midpoint
+   )
+   {
+      result.premiumDiscountConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         5.0,
+         "SELL in premium");
+
+      return true;
+   }
+
+   return false;
+}
+//====================================================================
+// BREAKOUT / RETEST CONFIRMATION
+//====================================================================
+
+bool CE_CheckBreakoutRetest(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   if(!ICT_ENABLE_BREAKOUT)
+      return false;
+
+   BreakoutRetestSignal signal;
+
+   ResetBreakoutRetestSignal(
+      signal);
+
+   if(!BR_Analyze(
+      symbol,
+      PERIOD_M15,
+      direction,
+      ICT_RETEST_LOOKBACK,
+      signal))
+   {
+      return false;
+   }
+
+   if(!signal.valid)
+      return false;
+
+   if(signal.breakoutConfirmed)
+   {
+      result.breakoutConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         8.0,
+         "M15 breakout confirmed");
+   }
+
+   if(signal.retestConfirmed)
+   {
+      result.retestConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         10.0,
+         "M15 breakout retest confirmed");
+   }
+
+   if(signal.failedBreakout)
+   {
+      result.failedBreakoutConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         10.0,
+         "M15 failed breakout");
+   }
+
+   if(signal.entryZoneHigh > 0.0)
+      result.zoneHigh =
+         signal.entryZoneHigh;
+
+   if(signal.entryZoneLow > 0.0)
       result.zoneLow =
-         confirmation.entryZoneLow;
+         signal.entryZoneLow;
+
+   return true;
+}
+
+//====================================================================
+// ADVANCED BLOCK CONFIRMATION
+//====================================================================
+
+bool CE_CheckAdvancedBlocks(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   AdvancedBlockAnalysis analysis;
+
+   ResetAdvancedBlockAnalysis(
+      analysis);
+
+   if(!AB_Analyze(
+      symbol,
+      PERIOD_M15,
+      direction,
+      analysis))
+   {
+      return false;
+   }
+
+   if(!analysis.valid)
+      return false;
+
+   if(analysis.breakerConfirmed)
+   {
+      result.breakerConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         7.0,
+         "Breaker block confirmed");
+   }
+
+   if(analysis.mitigationConfirmed)
+   {
+      result.mitigationBlockConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         7.0,
+         "Mitigation block confirmed");
+   }
+
+   if(analysis.displacementOriginConfirmed)
+   {
+      result.displacementConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         5.0,
+         "Displacement origin confirmed");
    }
 
    return true;
 }
 
 //====================================================================
-// M5 ENTRY PRICE
+// SESSION CONFIRMATION
 //====================================================================
 
-double CE_GetM5EntryPrice(
+bool CE_CheckSession(
    const string symbol,
-   const ENUM_STRATEGY_DIRECTION direction
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   if(!ICT_ENABLE_SESSION_FILTER)
+      return false;
+
+   SessionAnalysis analysis;
+
+   ResetSessionAnalysis(
+      analysis);
+
+   if(!SE_Analyze(
+      symbol,
+      PERIOD_M15,
+      direction,
+      analysis))
+   {
+      return false;
+   }
+
+   if(!analysis.valid)
+      return false;
+
+   if(analysis.direction !=
+      direction)
+   {
+      return false;
+   }
+
+   result.sessionConfirmed =
+      true;
+
+   CE_AddScore(
+      result,
+      5.0,
+      "Trading session supports direction");
+
+   if(analysis.liquiditySweep)
+   {
+      result.liquidityConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         5.0,
+         "Session liquidity sweep");
+   }
+
+   if(analysis.retestConfirmed)
+   {
+      result.retestConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         5.0,
+         "Session retest");
+   }
+
+   return true;
+}
+
+//====================================================================
+// VOLATILITY CONFIRMATION
+//====================================================================
+
+bool CE_CheckVolatility(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   if(!ICT_ENABLE_VOLATILITY_FILTER)
+      return false;
+
+   VolatilityAnalysis analysis;
+
+   ResetVolatilityAnalysis(
+      analysis);
+
+   if(!VE_Analyze(
+      symbol,
+      PERIOD_M15,
+      analysis))
+   {
+      return false;
+   }
+
+   if(!analysis.valid)
+      return false;
+
+   if(!VE_IsSafe(
+      analysis))
+   {
+      return false;
+   }
+
+   result.volatilityConfirmed =
+      true;
+
+   CE_AddScore(
+      result,
+      5.0,
+      "Gold volatility is tradable");
+
+   if(analysis.expansion)
+   {
+      CE_AddScore(
+         result,
+         3.0,
+         "Volatility expansion");
+   }
+
+   return true;
+}
+
+//====================================================================
+// PRICE ACTION CONFIRMATION
+//====================================================================
+
+bool CE_CheckPriceAction(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   PriceActionAnalysis analysis;
+
+   ResetPriceActionAnalysis(
+      analysis);
+
+   if(!PA_Analyze(
+      symbol,
+      PERIOD_M5,
+      direction,
+      analysis))
+   {
+      return false;
+   }
+
+   if(!analysis.valid)
+      return false;
+
+   if(analysis.engulfing)
+   {
+      result.engulfingConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         5.0,
+         "M5 engulfing pattern");
+   }
+
+   if(analysis.rejection)
+   {
+      result.rejectionConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         5.0,
+         "M5 rejection pattern");
+   }
+
+   if(analysis.momentum)
+   {
+      result.momentumConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         5.0,
+         "M5 momentum candle");
+   }
+
+   if(analysis.insideBarBreakout)
+   {
+      result.insideBarConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         4.0,
+         "M5 inside-bar breakout");
+   }
+
+   return true;
+}
+
+//====================================================================
+// TREND CONFIRMATION
+//====================================================================
+
+bool CE_CheckTrend(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   TrendAnalysis analysis;
+
+   ResetTrendAnalysis(
+      analysis);
+
+   if(!TE_AnalyzeGold(
+      symbol,
+      analysis))
+   {
+      return false;
+   }
+
+   if(!analysis.valid)
+      return false;
+
+   if(TE_DominantDirection(
+      analysis) !=
+      direction)
+   {
+      return false;
+   }
+
+   result.trendConfirmed =
+      true;
+
+   CE_AddScore(
+      result,
+      10.0,
+      "Multi-timeframe trend alignment");
+
+   if(analysis.continuation)
+   {
+      result.continuationConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         5.0,
+         "Trend continuation");
+   }
+
+   if(analysis.pullback)
+   {
+      result.pullbackConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         5.0,
+         "Trend pullback");
+   }
+
+   return true;
+}
+
+//====================================================================
+// REVERSAL CONFIRMATION
+//====================================================================
+
+bool CE_CheckReversal(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   ReversalAnalysis analysis;
+
+   ResetReversalAnalysis(
+      analysis);
+
+   if(!RV_AnalyzeGold(
+      symbol,
+      analysis))
+   {
+      return false;
+   }
+
+   if(!analysis.valid)
+      return false;
+
+   if(RV_DominantDirection(
+      analysis) !=
+      direction)
+   {
+      return false;
+   }
+
+   result.reversalConfirmed =
+      true;
+
+   CE_AddScore(
+      result,
+      10.0,
+      "Reversal engine confirms direction");
+
+   if(analysis.liquiditySweep)
+   {
+      result.liquidityReversalConfirmed =
+         true;
+
+      result.liquidityConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         8.0,
+         "Liquidity reversal");
+   }
+
+   if(analysis.exhaustion)
+   {
+      result.exhaustionConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         5.0,
+         "Exhaustion confirmation");
+   }
+
+   if(analysis.failedBreakout)
+   {
+      result.failedBreakoutConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         7.0,
+         "Failed-breakout reversal");
+   }
+
+   return true;
+}
+
+//====================================================================
+// STRUCTURAL LEVELS
+//====================================================================
+
+void CE_UpdateStructuralLevels(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   result.structuralHigh =
+      GetRecentSwingHighPrice(
+         symbol,
+         PERIOD_H4);
+
+   result.structuralLow =
+      GetRecentSwingLowPrice(
+         symbol,
+         PERIOD_H4);
+
+   if(direction ==
+      STRATEGY_DIRECTION_BUY)
+   {
+      if(result.structuralLow > 0.0)
+      {
+         result.zoneLow =
+            result.structuralLow;
+      }
+   }
+
+   if(direction ==
+      STRATEGY_DIRECTION_SELL)
+   {
+      if(result.structuralHigh > 0.0)
+      {
+         result.zoneHigh =
+            result.structuralHigh;
+      }
+   }
+}
+//====================================================================
+// TRADE PLAN GENERATION
+//====================================================================
+
+bool CE_BuildTradePlan(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
+)
+{
+   TradePlan plan;
+
+   ResetTradePlan(plan);
+
+   if(!TP_BuildPlan(
+      symbol,
+      direction,
+      result.entry,
+      result.structuralHigh,
+      result.structuralLow,
+      result.zoneHigh,
+      result.zoneLow,
+      plan))
+   {
+      return false;
+   }
+
+   if(!plan.valid)
+      return false;
+
+   result.tradePlan =
+      plan;
+
+   result.entry =
+      plan.entry;
+
+   result.stopLoss =
+      plan.stopLoss;
+
+   result.takeProfit =
+      plan.takeProfit;
+
+   result.rewardRisk =
+      plan.rewardRisk;
+
+   result.planScore =
+      plan.score;
+
+   result.tradePlanConfirmed =
+      true;
+
+   if(plan.rewardRisk >=
+      ICT_MIN_REWARD_RR)
+   {
+      result.riskRewardConfirmed =
+         true;
+
+      CE_AddScore(
+         result,
+         10.0,
+         "Trade plan meets minimum reward/risk");
+   }
+
+   CE_AddScore(
+      result,
+      plan.score * 0.10,
+      "Trade plan quality");
+
+   return true;
+}
+
+//====================================================================
+// FALLBACK STRUCTURAL TRADE PLAN
+//====================================================================
+
+bool CE_BuildFallbackPlan(
+   const string symbol,
+   const ENUM_STRATEGY_DIRECTION direction,
+   ConfluenceResult &result
 )
 {
    MqlTick tick;
 
    if(!SymbolInfoTick(
       symbol,
-      tick
-   ))
-      return 0.0;
+      tick))
+   {
+      return false;
+   }
 
-   if(direction == STRATEGY_DIRECTION_BUY)
-      return tick.ask;
+   double entry =
+      direction ==
+      STRATEGY_DIRECTION_BUY
+      ? tick.ask
+      : tick.bid;
 
-   if(direction == STRATEGY_DIRECTION_SELL)
-      return tick.bid;
+   if(entry <= 0.0)
+      return false;
 
-   return 0.0;
+   double high =
+      result.structuralHigh;
+
+   double low =
+      result.structuralLow;
+
+   if(high <= 0.0 ||
+      low <= 0.0 ||
+      high <= low)
+   {
+      return false;
+   }
+
+   double range =
+      high - low;
+
+   if(range <= 0.0)
+      return false;
+
+   double stopLoss = 0.0;
+   double takeProfit = 0.0;
+
+   if(direction ==
+      STRATEGY_DIRECTION_BUY)
+   {
+      stopLoss =
+         MathMin(
+            low,
+            result.zoneLow > 0.0
+            ? result.zoneLow
+            : low);
+
+      takeProfit =
+         entry +
+         MathAbs(entry - stopLoss)
+         * ICT_MIN_REWARD_RR;
+   }
+   else if(direction ==
+           STRATEGY_DIRECTION_SELL)
+   {
+      stopLoss =
+         MathMax(
+            high,
+            result.zoneHigh > 0.0
+            ? result.zoneHigh
+            : high);
+
+      takeProfit =
+         entry -
+         MathAbs(entry - stopLoss)
+         * ICT_MIN_REWARD_RR;
+   }
+   else
+   {
+      return false;
+   }
+
+   if(stopLoss <= 0.0 ||
+      takeProfit <= 0.0)
+   {
+      return false;
+   }
+
+   double risk =
+      MathAbs(entry - stopLoss);
+
+   if(risk <= 0.0)
+      return false;
+
+   double reward =
+      MathAbs(takeProfit - entry);
+
+   double rr =
+      reward / risk;
+
+   if(rr < ICT_MIN_REWARD_RR)
+      return false;
+
+   result.entry =
+      entry;
+
+   result.stopLoss =
+      stopLoss;
+
+   result.takeProfit =
+      takeProfit;
+
+   result.rewardRisk =
+      rr;
+
+   result.tradePlanConfirmed =
+      true;
+
+   result.riskRewardConfirmed =
+      true;
+
+   CE_AddScore(
+      result,
+      5.0,
+      "Structural fallback trade plan");
+
+   return true;
 }
 
 //====================================================================
-// UPDATE ENTRY PRICE
+// FINAL CONFLUENCE REQUIREMENTS
 //====================================================================
 
-void CE_UpdateEntryPrice(
-   const string symbol,
-   ConfluenceResult &result
-)
-{
-   double price =
-      CE_GetM5EntryPrice(
-         symbol,
-         result.direction
-      );
-
-   if(price > 0.0)
-      result.entry = price;
-}
-
-//====================================================================
-// FINAL ENTRY CONFIRMATION
-//====================================================================
-
-bool CE_FinalEntryConfirmation(
+bool CE_CoreRequirementsMet(
    const ConfluenceResult &result
 )
 {
    if(!result.valid)
       return false;
 
-   if(!result.actionable)
+   if(result.direction ==
+      STRATEGY_DIRECTION_NONE)
       return false;
 
-   if(!CE_IsDirectional(result))
-      return false;
+   /*
+      Core requirement:
+
+      1. H4 directional context
+      2. At least one meaningful structural confirmation
+      3. At least one liquidity/zone/retest component
+      4. M15 confirmation
+      5. M5 confirmation
+   */
 
    if(!result.h4Confirmed)
       return false;
 
-   if(!result.h1Confirmed)
+   if(!result.structureConfirmed)
+      return false;
+
+   bool zoneEvidence =
+      result.liquidityConfirmed ||
+      result.fvgConfirmed ||
+      result.orderBlockConfirmed ||
+      result.breakoutConfirmed ||
+      result.retestConfirmed ||
+      result.reversalConfirmed;
+
+   if(!zoneEvidence)
       return false;
 
    if(!result.m15Confirmed)
       return false;
 
    if(!result.m5Confirmed)
-      return false;
-
-   //-----------------------------------------------------------------
-   // A REAL ENTRY SHOULD HAVE STRUCTURE
-   //-----------------------------------------------------------------
-
-   if(
-      !result.mssConfirmed &&
-      !result.bosConfirmed
-   )
-      return false;
-
-   //-----------------------------------------------------------------
-   // A REAL ENTRY SHOULD HAVE AT LEAST ONE LOCATION
-   //-----------------------------------------------------------------
-
-   if(
-      !result.fvgConfirmed &&
-      !result.orderBlockConfirmed &&
-      !result.retestConfirmed
-   )
-      return false;
-
-   //-----------------------------------------------------------------
-   // CONFLUENCE THRESHOLD
-   //-----------------------------------------------------------------
-
-   if(
-      result.score <
-      ICT_MIN_CONFLUENCE_SCORE
-   )
       return false;
 
    return true;
 }
+
 //====================================================================
-// FINALIZE CONFLUENCE
+// FINAL SCORE
 //====================================================================
 
-void CE_Finalize(
+double CE_FinalScore(
    ConfluenceResult &result
 )
 {
-   result.confidence =
+   double score =
       result.score;
 
-   //-----------------------------------------------------------------
-   // BASIC DIRECTION CHECK
-   //-----------------------------------------------------------------
+   /*
+      Reward/risk is mandatory quality,
+      but it should not overpower market evidence.
+   */
 
-   if(!CE_IsDirectional(result))
+   if(result.riskRewardConfirmed)
+      score += 5.0;
+
+   if(result.tradePlanConfirmed)
+      score += 3.0;
+
+   /*
+      Multi-timeframe alignment bonus.
+   */
+
+   if(result.h4Confirmed &&
+      result.h1Confirmed &&
+      result.m15Confirmed &&
+      result.m5Confirmed)
    {
-      result.valid = false;
-      result.actionable = false;
+      score += 5.0;
 
-      result.reason =
-         "No directional confluence.";
-
-      return;
+      if(result.evidence == "")
+         result.evidence =
+            "Full H4/H1/M15/M5 alignment";
+      else
+         result.evidence +=
+            " | Full H4/H1/M15/M5 alignment";
    }
 
-   //-----------------------------------------------------------------
-   // HIGHER-TIMEFRAME ALIGNMENT
-   //-----------------------------------------------------------------
+   /*
+      Liquidity + displacement + structure
+      is one of the strongest ICT combinations.
+   */
 
-   if(
-      !result.h4Confirmed ||
-      !result.h1Confirmed
-   )
+   if(result.liquidityConfirmed &&
+      result.displacementConfirmed &&
+      result.structureConfirmed)
    {
-      result.valid = false;
-      result.actionable = false;
+      score += 5.0;
 
-      result.reason =
-         "H4/H1 direction not aligned.";
-
-      return;
+      result.evidence +=
+         " | Liquidity + displacement + structure";
    }
 
-   //-----------------------------------------------------------------
-   // M15 CONFIRMATION
-   //-----------------------------------------------------------------
+   /*
+      Retest confirmation strengthens entries.
+   */
 
-   if(!result.m15Confirmed)
+   if(result.retestConfirmed &&
+      result.m5Confirmed)
    {
-      result.valid = false;
-      result.actionable = false;
+      score += 5.0;
 
-      result.reason =
-         "M15 confirmation missing.";
-
-      return;
+      result.evidence +=
+         " | M5 retest alignment";
    }
 
-   //-----------------------------------------------------------------
-   // M5 ENTRY CONFIRMATION
-   //-----------------------------------------------------------------
+   if(score > 100.0)
+      score = 100.0;
 
-   if(!result.m5Confirmed)
-   {
-      result.valid = false;
-      result.actionable = false;
+   result.score =
+      score;
 
-      result.reason =
-         "M5 entry confirmation missing.";
+   result.confidence =
+      score;
 
-      return;
-   }
-
-   //-----------------------------------------------------------------
-   // STRUCTURE
-   //-----------------------------------------------------------------
-
-   if(
-      !result.structureConfirmed &&
-      !result.mssConfirmed &&
-      !result.bosConfirmed
-   )
-   {
-      result.valid = false;
-      result.actionable = false;
-
-      result.reason =
-         "No valid market structure confirmation.";
-
-      return;
-   }
-
-   //-----------------------------------------------------------------
-   // ENTRY LOCATION
-   //-----------------------------------------------------------------
-
-   if(
-      !result.fvgConfirmed &&
-      !result.orderBlockConfirmed &&
-      !result.retestConfirmed
-   )
-   {
-      result.valid = false;
-      result.actionable = false;
-
-      result.reason =
-         "No valid entry location.";
-
-      return;
-   }
-
-   //-----------------------------------------------------------------
-   // CONFLUENCE SCORE
-   //-----------------------------------------------------------------
-
-   if(
-      result.score <
-      ICT_MIN_CONFLUENCE_SCORE
-   )
-   {
-      result.valid = true;
-      result.actionable = false;
-
-      result.reason =
-         "Setup detected but confluence score is too low.";
-
-      return;
-   }
-
-   //-----------------------------------------------------------------
-   // FINAL VALID SETUP
-   //-----------------------------------------------------------------
-
-   result.valid = true;
-   result.actionable = true;
-
-   result.reason =
-      "High-confluence Gold setup confirmed.";
+   return score;
 }
 
 //====================================================================
-// ANALYZE ONE DIRECTION
+// ACTIONABILITY
+//====================================================================
+
+bool CE_IsActionable(
+   ConfluenceResult &result
+)
+{
+   if(!CE_CoreRequirementsMet(
+      result))
+   {
+      result.actionable =
+         false;
+
+      return false;
+   }
+
+   CE_FinalScore(
+      result);
+
+   if(result.score <
+      ICT_MIN_CONFLUENCE_SCORE)
+   {
+      result.actionable =
+         false;
+
+      return false;
+   }
+
+   if(!result.tradePlanConfirmed)
+   {
+      result.actionable =
+         false;
+
+      return false;
+   }
+
+   if(!result.riskRewardConfirmed)
+   {
+      result.actionable =
+         false;
+
+      return false;
+   }
+
+   if(result.rewardRisk <
+      ICT_MIN_REWARD_RR)
+   {
+      result.actionable =
+         false;
+
+      return false;
+   }
+
+   result.actionable =
+      true;
+
+   return true;
+}
+//====================================================================
+// DIRECTION ANALYSIS
 //====================================================================
 
 bool CE_AnalyzeDirection(
    const string symbol,
    const ENUM_STRATEGY_DIRECTION direction,
-   const StrategySignal &source,
    ConfluenceResult &result
 )
 {
@@ -1448,348 +2255,565 @@ bool CE_AnalyzeDirection(
    if(!CE_IsGold(symbol))
    {
       result.reason =
-         "Rejected: non-Gold symbol.";
-
+         "Gold-only protection rejected symbol.";
       return false;
    }
-
-   if(
-      direction != STRATEGY_DIRECTION_BUY &&
-      direction != STRATEGY_DIRECTION_SELL
-   )
-   {
-      result.reason =
-         "Invalid direction.";
-
-      return false;
-   }
-
-   //-----------------------------------------------------------------
-   // SOURCE STRATEGY
-   //-----------------------------------------------------------------
-
-   CE_ApplySourceSignal(
-      source,
-      result
-   );
-
-   //-----------------------------------------------------------------
-   // H4
-   //-----------------------------------------------------------------
-
-   CE_CheckH4Structure(
-      symbol,
-      direction,
-      result
-   );
-
-   //-----------------------------------------------------------------
-   // H1
-   //-----------------------------------------------------------------
-
-   CE_CheckH1Structure(
-      symbol,
-      direction,
-      result
-   );
-
-   CE_CheckH1Break(
-      symbol,
-      direction,
-      result
-   );
-
-   //-----------------------------------------------------------------
-   // M15
-   //-----------------------------------------------------------------
-
-   CE_CheckM15Confirmation(
-      symbol,
-      direction,
-      result
-   );
-
-   CE_CheckM15Liquidity(
-      symbol,
-      direction,
-      result
-   );
-
-   CE_CheckM15FVG(
-      symbol,
-      direction,
-      result
-   );
-
-   CE_CheckM15OrderBlock(
-      symbol,
-      direction,
-      result
-   );
-
-   //-----------------------------------------------------------------
-   // M5
-   //-----------------------------------------------------------------
-
-   CE_CheckM5Confirmation(
-      symbol,
-      direction,
-      result
-   );
-
-   //-----------------------------------------------------------------
-   // UPDATE LIVE ENTRY
-   //-----------------------------------------------------------------
-
-   CE_UpdateEntryPrice(
-      symbol,
-      result
-   );
-
-   //-----------------------------------------------------------------
-   // FINAL DECISION
-   //-----------------------------------------------------------------
-
-   CE_Finalize(
-      result
-   );
-
-   return result.valid;
-}
-
-//====================================================================
-// ANALYZE GOLD CONFLUENCE
-//====================================================================
-
-bool CE_AnalyzeGold(
-   const string symbol,
-   ConfluenceResult &result
-)
-{
-   CE_ResetResult(result);
-
-   if(!CE_IsGold(symbol))
-   {
-      result.reason =
-         "Only XAUUSD is permitted.";
-
-      return false;
-   }
-
-   //-----------------------------------------------------------------
-   // HISTORY
-   //-----------------------------------------------------------------
 
    if(!CE_HasHistory(
       symbol,
-      ICT_PRIMARY_TF,
-      ICT_MIN_HISTORY_BARS
-   ))
+      PERIOD_H4,
+      ICT_MIN_HISTORY_BARS))
    {
       result.reason =
          "Insufficient H4 history.";
-
       return false;
    }
 
    if(!CE_HasHistory(
       symbol,
       PERIOD_H1,
-      ICT_MIN_HISTORY_BARS
-   ))
+      ICT_MIN_HISTORY_BARS))
    {
       result.reason =
          "Insufficient H1 history.";
-
       return false;
    }
 
    if(!CE_HasHistory(
       symbol,
-      ICT_CONFIRM_TF,
-      ICT_MIN_HISTORY_BARS
-   ))
+      PERIOD_M15,
+      ICT_MIN_HISTORY_BARS))
    {
       result.reason =
          "Insufficient M15 history.";
-
       return false;
    }
 
    if(!CE_HasHistory(
       symbol,
-      ICT_ENTRY_TF,
-      ICT_MIN_HISTORY_BARS
-   ))
+      PERIOD_M5,
+      ICT_MIN_HISTORY_BARS))
    {
       result.reason =
          "Insufficient M5 history.";
-
       return false;
    }
 
-   //-----------------------------------------------------------------
-   // GET STRATEGY ENGINE RESULT
-   //-----------------------------------------------------------------
-
-   StrategyEngineResult strategyResult;
-
-   SE_ResetResult(
-      strategyResult
-   );
-
-   if(!SE_AnalyzeGold(
-      symbol,
-      strategyResult
-   ))
+   if(direction ==
+      STRATEGY_DIRECTION_NONE)
    {
       result.reason =
-         strategyResult.summary;
-
+         "No trading direction supplied.";
       return false;
    }
 
-   //-----------------------------------------------------------------
-   // ANALYZE SELECTED DIRECTION
-   //-----------------------------------------------------------------
+   result.valid =
+      true;
 
-   ConfluenceResult analyzed;
+   result.direction =
+      direction;
 
-   CE_ResetResult(
-      analyzed
-   );
+   //==============================================================
+   // PRIMARY STRUCTURE
+   //==============================================================
 
-   if(!CE_AnalyzeDirection(
+   CE_CheckH4(
       symbol,
-      strategyResult.bestSignal.direction,
-      strategyResult.bestSignal,
-      analyzed
-   ))
-   {
-      result = analyzed;
+      direction,
+      result);
 
-      return false;
+   //==============================================================
+   // INTERMEDIATE STRUCTURE
+   //==============================================================
+
+   CE_CheckH1(
+      symbol,
+      direction,
+      result);
+
+   CE_CheckH1Break(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // M15 CONFIRMATION
+   //==============================================================
+
+   CE_CheckM15(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // LIQUIDITY
+   //==============================================================
+
+   CE_CheckLiquidity(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // ICT IMBALANCE / BLOCKS
+   //==============================================================
+
+   CE_CheckFVG(
+      symbol,
+      direction,
+      result);
+
+   CE_CheckOrderBlock(
+      symbol,
+      direction,
+      result);
+
+   CE_CheckAdvancedBlocks(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // BREAKOUT / RETEST
+   //==============================================================
+
+   CE_CheckBreakoutRetest(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // PREMIUM / DISCOUNT
+   //==============================================================
+
+   CE_CheckPremiumDiscount(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // SESSION
+   //==============================================================
+
+   CE_CheckSession(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // VOLATILITY
+   //==============================================================
+
+   CE_CheckVolatility(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // TREND / CONTINUATION
+   //==============================================================
+
+   CE_CheckTrend(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // REVERSAL
+   //==============================================================
+
+   CE_CheckReversal(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // PRICE ACTION
+   //==============================================================
+
+   CE_CheckPriceAction(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // FINAL M5 ENTRY CONFIRMATION
+   //==============================================================
+
+   CE_CheckM5(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // STRUCTURAL LEVELS
+   //==============================================================
+
+   CE_UpdateStructuralLevels(
+      symbol,
+      direction,
+      result);
+
+   //==============================================================
+   // TRADE PLAN
+   //==============================================================
+
+   if(!CE_BuildTradePlan(
+      symbol,
+      direction,
+      result))
+   {
+      /*
+         The fallback is only used when the
+         primary TradePlanEngine cannot build
+         a plan from the detected zones.
+      */
+
+      CE_BuildFallbackPlan(
+         symbol,
+         direction,
+         result);
    }
 
-   result = analyzed;
+   //==============================================================
+   // FINAL ACTIONABILITY
+   //==============================================================
 
-   return result.valid;
+   CE_FinalScore(
+      result);
+
+   CE_IsActionable(
+      result);
+
+   if(result.actionable)
+   {
+      result.reason =
+         "High-confluence gold setup confirmed.";
+   }
+   else
+   {
+      result.reason =
+         "Gold setup detected but confluence requirements "
+         "are not fully satisfied.";
+   }
+
+   return true;
 }
 
 //====================================================================
-// CONFLUENCE DESCRIPTION
+// FULL GOLD ANALYSIS
 //====================================================================
 
-string CE_Description(
+bool CE_AnalyzeGold(
+   const string symbol,
+   ConfluenceResult &buyResult,
+   ConfluenceResult &sellResult,
+   ConfluenceResult &bestResult
+)
+{
+   CE_ResetResult(
+      buyResult);
+
+   CE_ResetResult(
+      sellResult);
+
+   CE_ResetResult(
+      bestResult);
+
+   if(!CE_IsGold(symbol))
+   {
+      buyResult.reason =
+         "Symbol is not XAUUSD.";
+
+      sellResult.reason =
+         "Symbol is not XAUUSD.";
+
+      bestResult.reason =
+         "Gold-only protection rejected symbol.";
+
+      return false;
+   }
+
+   /*
+      Analyze both directions independently.
+      This prevents the EA from assuming direction
+      before the evidence has been evaluated.
+   */
+
+   CE_AnalyzeDirection(
+      symbol,
+      STRATEGY_DIRECTION_BUY,
+      buyResult);
+
+   CE_AnalyzeDirection(
+      symbol,
+      STRATEGY_DIRECTION_SELL,
+      sellResult);
+
+   //==============================================================
+   // SELECT BEST ACTIONABLE DIRECTION
+   //==============================================================
+
+   if(buyResult.actionable &&
+      sellResult.actionable)
+   {
+      if(buyResult.score >=
+         sellResult.score)
+      {
+         bestResult =
+            buyResult;
+      }
+      else
+      {
+         bestResult =
+            sellResult;
+      }
+
+      /*
+         Never allow simultaneous opposite
+         gold signals through the confluence layer.
+      */
+
+      return true;
+   }
+
+   if(buyResult.actionable)
+   {
+      bestResult =
+         buyResult;
+
+      return true;
+   }
+
+   if(sellResult.actionable)
+   {
+      bestResult =
+         sellResult;
+
+      return true;
+   }
+
+   /*
+      No actionable setup.
+      Return the stronger candidate for diagnostics,
+      even though it cannot be traded.
+   */
+
+   if(buyResult.score >=
+      sellResult.score)
+   {
+      bestResult =
+         buyResult;
+   }
+   else
+   {
+      bestResult =
+         sellResult;
+   }
+
+   return true;
+}
+
+//====================================================================
+// RESULT DESCRIPTION
+//====================================================================
+
+string CE_ResultDescription(
    const ConfluenceResult &result
 )
 {
-   string direction =
-      "NONE";
-
-   if(
-      result.direction ==
-      STRATEGY_DIRECTION_BUY
-   )
-      direction = "BUY";
-
-   if(
-      result.direction ==
-      STRATEGY_DIRECTION_SELL
-   )
-      direction = "SELL";
-
    string text =
-      direction +
-      " | Score=" +
+      "Direction: ";
+
+   if(result.direction ==
+      STRATEGY_DIRECTION_BUY)
+   {
+      text += "BUY";
+   }
+   else if(result.direction ==
+           STRATEGY_DIRECTION_SELL)
+   {
+      text += "SELL";
+   }
+   else
+   {
+      text += "NONE";
+   }
+
+   text +=
+      " | Score: " +
       DoubleToString(
          result.score,
-         1
-      );
+         1);
 
    text +=
-      " | Quality=" +
+      " | Confidence: " +
+      DoubleToString(
+         result.confidence,
+         1);
+
+   text +=
+      " | Quality: " +
       CE_Quality(
-         result.score
-      );
+         result.score);
 
    text +=
-      " | H4=" +
-      (result.h4Confirmed ? "YES" : "NO");
+      " | RR: " +
+      DoubleToString(
+         result.rewardRisk,
+         2);
 
    text +=
-      " | H1=" +
-      (result.h1Confirmed ? "YES" : "NO");
+      " | Actionable: " +
+      (result.actionable
+       ? "YES"
+       : "NO");
 
-   text +=
-      " | M15=" +
-      (result.m15Confirmed ? "YES" : "NO");
-
-   text +=
-      " | M5=" +
-      (result.m5Confirmed ? "YES" : "NO");
+   if(result.reason != "")
+   {
+      text +=
+         " | " +
+         result.reason;
+   }
 
    return text;
 }
 
 //====================================================================
-// PRINT CONFLUENCE RESULT
+// DIAGNOSTIC PRINT
 //====================================================================
 
 void CE_PrintResult(
+   const string label,
    const ConfluenceResult &result
 )
 {
    Print(
-      "[CONFLUENCE] ",
-      CE_Description(result)
+      "========== ",
+      label,
+      " =========="
    );
 
    Print(
-      "[CONFLUENCE] Actionable=",
-      result.actionable ? "YES" : "NO",
-      " | Reason=",
-      result.reason
+      CE_ResultDescription(
+         result)
    );
 
-   if(result.evidence != "")
-   {
-      Print(
-         "[CONFLUENCE EVIDENCE] ",
-         result.evidence
-      );
-   }
+   Print(
+      "H4=",
+      result.h4Confirmed,
+      " H1=",
+      result.h1Confirmed,
+      " M15=",
+      result.m15Confirmed,
+      " M5=",
+      result.m5Confirmed
+   );
 
    Print(
-      "[CONFLUENCE] Entry=",
+      "Liquidity=",
+      result.liquidityConfirmed,
+      " Structure=",
+      result.structureConfirmed,
+      " MSS=",
+      result.mssConfirmed,
+      " BOS=",
+      result.bosConfirmed
+   );
+
+   Print(
+      "FVG=",
+      result.fvgConfirmed,
+      " FVGRetest=",
+      result.fvgRetestConfirmed,
+      " OB=",
+      result.orderBlockConfirmed,
+      " OBRetest=",
+      result.orderBlockRetestConfirmed
+   );
+
+   Print(
+      "Breaker=",
+      result.breakerConfirmed,
+      " Mitigation=",
+      result.mitigationBlockConfirmed
+   );
+
+   Print(
+      "Breakout=",
+      result.breakoutConfirmed,
+      " Retest=",
+      result.retestConfirmed,
+      " FailedBreakout=",
+      result.failedBreakoutConfirmed
+   );
+
+   Print(
+      "Trend=",
+      result.trendConfirmed,
+      " Pullback=",
+      result.pullbackConfirmed,
+      " Continuation=",
+      result.continuationConfirmed,
+      " Reversal=",
+      result.reversalConfirmed
+   );
+
+   Print(
+      "Engulfing=",
+      result.engulfingConfirmed,
+      " Rejection=",
+      result.rejectionConfirmed,
+      " Momentum=",
+      result.momentumConfirmed,
+      " InsideBar=",
+      result.insideBarConfirmed
+   );
+
+   Print(
+      "Session=",
+      result.sessionConfirmed,
+      " Volatility=",
+      result.volatilityConfirmed,
+      " PremiumDiscount=",
+      result.premiumDiscountConfirmed
+   );
+
+   Print(
+      "Entry=",
       DoubleToString(
          result.entry,
-         _Digits
-      ),
-      " | Zone=",
+         _Digits),
+      " SL=",
       DoubleToString(
-         result.zoneLow,
-         _Digits
-      ),
-      " - ",
+         result.stopLoss,
+         _Digits),
+      " TP=",
       DoubleToString(
-         result.zoneHigh,
-         _Digits
-      )
+         result.takeProfit,
+         _Digits)
+   );
+
+   Print(
+      "Evidence: ",
+      result.evidence
    );
 }
 
 //====================================================================
-// ENGINE STATUS
+// STATUS
 //====================================================================
 
 string CE_Status()
 {
-   return
-      "Gold Confluence Engine | "
-      "H4 -> H1 -> M15 -> M5 | "
-      "ICT/SMC + Retest + Price Action | "
-      "M1 scalping removed";
+   if(ICT_DEVELOPMENT_MODE)
+      return "Confluence engine active; execution blocked by development mode.";
+
+   return "Confluence engine active.";
 }
+
+//====================================================================
+// END OF CONFLUENCE ENGINE
+//====================================================================
 
 #endif
