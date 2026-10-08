@@ -1,26 +1,37 @@
 //+------------------------------------------------------------------+
 //| ExnessICT_EA.mq5                                                 |
-//| Exness ICT EA - integrated development build                     |
+//| Gold Multi-Strategy Confluence EA                                |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "0.90"
-#property description "H4/M15/M5 ICT analysis plus reactive M1 momentum scalper."
-#property description "Equity-based risk engine, daily protection and growth controller."
-#property description "Trading remains disabled by default during development/testing."
+#property version   "1.00"
+#property description "Gold-only H4/H1/M15/M5 multi-strategy confluence EA."
+#property description "ICT/SMC, liquidity, FVG, order blocks, retests, trend,"
+#property description "reversal, breakout, price action and volatility analysis."
+#property description "Trading remains disabled during development/testing."
 
 #include <Trade/Trade.mqh>
 
 #include "../Include/Config.mqh"
+#include "../Include/RiskEngine.mqh"
 #include "../Include/MarketStructure.mqh"
 #include "../Include/StructureSignal.mqh"
 #include "../Include/Liquidity.mqh"
 #include "../Include/FVG.mqh"
 #include "../Include/OrderBlock.mqh"
 #include "../Include/M5Confirmation.mqh"
-#include "../Include/RiskEngine.mqh"
-#include "../Include/M1Scalper.mqh"
 #include "../Include/ExecutionEngine.mqh"
 #include "../Include/GrowthController.mqh"
+#include "../Include/StrategySignal.mqh"
+#include "../Include/StrategyEngine.mqh"
+#include "../Include/ConfluenceEngine.mqh"
+#include "../Include/BreakoutRetest.mqh"
+#include "../Include/AdvancedBlocks.mqh"
+#include "../Include/SessionEngine.mqh"
+#include "../Include/VolatilityEngine.mqh"
+#include "../Include/PriceActionEngine.mqh"
+#include "../Include/TrendEngine.mqh"
+#include "../Include/ReversalEngine.mqh"
+#include "../Include/TradePlanEngine.mqh"
 
 CTrade Trade;
 
@@ -28,109 +39,82 @@ CTrade Trade;
 //| Inputs                                                           |
 //+------------------------------------------------------------------+
 
-input ENUM_TIMEFRAMES InpPrimaryTF       = ICT_PRIMARY_TF;
-input ENUM_TIMEFRAMES InpConfirmTF       = ICT_CONFIRM_TF;
-input ENUM_TIMEFRAMES InpEntryTF         = ICT_ENTRY_TF;
+input ENUM_TIMEFRAMES InpPrimaryTF =
+   ICT_PRIMARY_TF;
 
-input double          InpRiskPercent     = ICT_RISK_PERCENT;
-input double          InpMaxTotalRiskPct = ICT_MAX_TOTAL_RISK_PERCENT;
+input ENUM_TIMEFRAMES InpIntermediateTF =
+   PERIOD_H1;
 
-input ulong           InpMagicNumber     = ICT_MAGIC_NUMBER;
-input int             InpMaxSpreadPts    = ICT_MAX_SPREAD_PTS;
-input int             InpDeviationPts    = ICT_MAX_SLIPPAGE_PTS;
+input ENUM_TIMEFRAMES InpConfirmTF =
+   ICT_CONFIRM_TF;
 
-// IMPORTANT: keep false during development/testing.
-input bool            InpEnableTrading   = false;
+input ENUM_TIMEFRAMES InpEntryTF =
+   ICT_ENTRY_TF;
 
-//+------------------------------------------------------------------+
-//| Trading modes                                                    |
-//+------------------------------------------------------------------+
+//-------------------------------------------------------------------
+// Risk
+//-------------------------------------------------------------------
 
-enum ENUM_EA_TRADING_MODE
-{
-   EA_MODE_NORMAL=0,
-   EA_MODE_SCALPER=1,
-   EA_MODE_AUTO=2
-};
+input double InpRiskPercent =
+   ICT_RISK_PERCENT;
 
-input ENUM_EA_TRADING_MODE InpTradingMode = EA_MODE_SCALPER;
+input double InpMaxTotalRiskPct =
+   ICT_MAX_TOTAL_RISK_PERCENT;
 
-//+------------------------------------------------------------------+
-//| Symbol scanning                                                  |
-//+------------------------------------------------------------------+
+//-------------------------------------------------------------------
+// Execution
+//-------------------------------------------------------------------
 
-input bool InpScanMarketWatchSymbols = true;
+input ulong InpMagicNumber =
+   ICT_MAGIC_NUMBER;
 
-//+------------------------------------------------------------------+
-//| Scalper settings                                                 |
-//+------------------------------------------------------------------+
+input int InpMaxSpreadPts =
+   ICT_MAX_SPREAD_PTS;
 
-input double InpScalpMinScore =
-   ICT_SCALP_MIN_SCORE;
+input int InpDeviationPts =
+   ICT_MAX_SLIPPAGE_PTS;
 
-input int InpScalpMaxHoldSeconds =
-   ICT_SCALP_MAX_HOLD_SECONDS;
+// IMPORTANT:
+// Keep false while development/testing is in progress.
+input bool InpEnableTrading =
+   ICT_TRADING_DEFAULT_ENABLED;
 
-input int InpScalpCooldownSeconds =
-   ICT_SCALP_COOLDOWN_SECONDS;
+//-------------------------------------------------------------------
+// Daily protection
+//-------------------------------------------------------------------
 
-input int InpScalpMaxPositions =
-   ICT_SCALP_MAX_POSITIONS;
+input double InpDailyLossLimitPct =
+   ICT_MAX_DAILY_LOSS_PERCENT;
 
-input int InpScalpMaxSymbolPositions =
-   ICT_SCALP_MAX_SYMBOL_POSITIONS;
+input double InpDailyProfitTargetPct =
+   ICT_DAILY_PROFIT_TARGET_PERCENT;
 
-//+------------------------------------------------------------------+
-//| Daily protection                                                 |
-//+------------------------------------------------------------------+
+//-------------------------------------------------------------------
+// Confluence
+//-------------------------------------------------------------------
 
-input double InpDailyLossLimitPct = 3.0;
+input double InpMinimumConfluenceScore =
+   ICT_MIN_CONFLUENCE_SCORE;
 
-input double InpDailyProfitTargetMoney = 0.0;
-
-//+------------------------------------------------------------------+
-//| ICT analysis settings                                            |
-//+------------------------------------------------------------------+
-
-input int InpStructureLookback =
-   ICT_STRUCTURE_LOOKBACK;
-
-input int InpFVGScanLookback = 20;
-
-input int InpOBScanLookback =
-   ICT_OB_LOOKBACK;
+input double InpMinimumRewardRisk =
+   ICT_MIN_REWARD_RR;
 
 //+------------------------------------------------------------------+
-//| Global timing state                                              |
+//| Global state                                                     |
 //+------------------------------------------------------------------+
 
-datetime g_lastPrimaryBar=0;
-datetime g_lastConfirmBar=0;
-datetime g_lastEntryBar=0;
-datetime g_lastScalpEntryTime=0;
+datetime g_lastH4Bar  = 0;
+datetime g_lastH1Bar  = 0;
+datetime g_lastM15Bar = 0;
+datetime g_lastM5Bar  = 0;
 
-//+------------------------------------------------------------------+
-//| H4 setup state                                                   |
-//+------------------------------------------------------------------+
+datetime g_lastAnalysisTime = 0;
 
-bool g_h4SetupActive=false;
+bool g_dailyLocked = false;
 
-ENUM_STRUCTURE_DIRECTION
-g_h4SetupDirection=STRUCTURE_UNKNOWN;
+datetime g_dayStart = 0;
 
-datetime g_h4SetupTime=0;
-
-int g_h4SetupShift=-1;
-
-//+------------------------------------------------------------------+
-//| Daily account protection state                                   |
-//+------------------------------------------------------------------+
-
-datetime g_dayStart=0;
-
-double g_dayStartEquity=0.0;
-
-bool g_dailyLocked=false;
+double g_dayStartEquity = 0.0;
 
 //+------------------------------------------------------------------+
 //| Growth controller                                                |
@@ -139,234 +123,103 @@ bool g_dailyLocked=false;
 GrowthController g_growthController;
 
 //+------------------------------------------------------------------+
-//| Growth controller initialization                                 |
+//| Confluence results                                               |
 //+------------------------------------------------------------------+
 
-bool InitializeGrowthController()
-{
-   GC_Reset(g_growthController);
-
-   //-----------------------------------------------------------------
-   // Try to recover an existing cycle.
-   //-----------------------------------------------------------------
-
-   if(GC_LoadState(
-      g_growthController,
-      InpMagicNumber))
-   {
-      if(GC_InitializeExisting(
-         g_growthController,
-         InpMagicNumber,
-         g_growthController.startingEquity,
-         g_growthController.startTime))
-      {
-         GC_Update(
-            g_growthController,
-            AccountInfoDouble(ACCOUNT_EQUITY)
-         );
-
-         Print("[GROWTH] Existing growth cycle restored.");
-
-         GC_PrintStatus(g_growthController);
-
-         return(true);
-      }
-   }
-
-   //-----------------------------------------------------------------
-   // No existing cycle: create one from current equity.
-   //-----------------------------------------------------------------
-
-   double equity=
-      AccountInfoDouble(ACCOUNT_EQUITY);
-
-   if(equity<=0.0)
-   {
-      Print("[GROWTH] Cannot initialize: invalid account equity.");
-      return(false);
-   }
-
-   if(!GC_InitializeNew(
-      g_growthController,
-      InpMagicNumber,
-      equity))
-   {
-      Print("[GROWTH] Failed to create growth cycle.");
-      return(false);
-   }
-
-   GC_Update(
-      g_growthController,
-      equity
-   );
-
-   Print("[GROWTH] New growth cycle initialized.");
-
-   GC_PrintStatus(g_growthController);
-
-   return(true);
-}
+ConfluenceResult g_buyResult;
+ConfluenceResult g_sellResult;
+ConfluenceResult g_bestResult;
 
 //+------------------------------------------------------------------+
-//| Update growth controller                                         |
+//| Gold symbol protection                                           |
 //+------------------------------------------------------------------+
 
-void UpdateGrowthController()
-{
-   if(!g_growthController.initialized)
-      return;
-
-   double equity=
-      AccountInfoDouble(ACCOUNT_EQUITY);
-
-   if(equity<=0.0)
-      return;
-
-   GC_Update(
-      g_growthController,
-      equity
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Growth trading permission                                        |
-//+------------------------------------------------------------------+
-
-bool IsGrowthTradingAllowed()
-{
-   UpdateGrowthController();
-
-   if(!g_growthController.initialized)
-      return(false);
-
-   if(GC_TargetReached(g_growthController))
-   {
-      return(false);
-   }
-
-   return(true);
-}
-
-//+------------------------------------------------------------------+
-//| Confirmation states                                              |
-//+------------------------------------------------------------------+
-
-enum ENUM_CONFIRMATION_STATE
-{
-   CONFIRMATION_NONE=0,
-   CONFIRMATION_WAITING,
-   CONFIRMATION_CONFIRMED,
-   CONFIRMATION_INVALID
-};
-
-struct M15Confirmation
-{
-   bool confirmed;
-   bool valid;
-
-   ENUM_CONFIRMATION_STATE state;
-
-   ENUM_STRUCTURE_DIRECTION direction;
-
-   bool displacement;
-   bool mss;
-   bool bos;
-   bool fvgPresent;
-   bool orderBlockPresent;
-
-   double brokenLevel;
-
-   datetime confirmationTime;
-
-   int confirmationShift;
-
-   string reason;
-};
-
-M15Confirmation g_m15Confirmation;
-
-M5Confirmation g_m5Confirmation;
-
-//+------------------------------------------------------------------+
-//| Reset M15 confirmation                                           |
-//+------------------------------------------------------------------+
-
-void ResetM15Confirmation(
-   M15Confirmation &c)
-{
-   c.confirmed=false;
-   c.valid=false;
-
-   c.state=
-      CONFIRMATION_NONE;
-
-   c.direction=
-      STRUCTURE_UNKNOWN;
-
-   c.displacement=false;
-   c.mss=false;
-   c.bos=false;
-
-   c.fvgPresent=false;
-   c.orderBlockPresent=false;
-
-   c.brokenLevel=0.0;
-
-   c.confirmationTime=0;
-
-   c.confirmationShift=-1;
-
-   c.reason="";
-}
-
-//+------------------------------------------------------------------+
-//| Symbol tradability                                               |
-//+------------------------------------------------------------------+
-
-bool IsSymbolTradable(
+bool IsGoldSymbol(
    const string symbol)
 {
-   if(symbol=="")
-      return(false);
-
-   if(!SymbolSelect(symbol,true))
-      return(false);
-
-   long mode=0;
-
-   if(!SymbolInfoInteger(
-      symbol,
-      SYMBOL_TRADE_MODE,
-      mode))
-      return(false);
-
-   return(
-      mode!=SYMBOL_TRADE_MODE_DISABLED
-   );
+   return RE_IsGoldSymbol(symbol);
 }
 
 //+------------------------------------------------------------------+
-//| Spread filter                                                    |
+//| Symbol validation                                                |
 //+------------------------------------------------------------------+
 
-bool IsSpreadAcceptable(
-   const string symbol)
+bool ValidateGoldSymbol()
 {
-   long spread=0;
+   string symbol =
+      _Symbol;
 
-   if(!SymbolInfoInteger(
+   if(!IsGoldSymbol(symbol))
+   {
+      Print(
+         "[GOLD ONLY] EA rejected symbol: ",
+         symbol
+      );
+
+      return false;
+   }
+
+   if(!SymbolSelect(
       symbol,
-      SYMBOL_SPREAD,
-      spread))
-      return(false);
+      true))
+   {
+      Print(
+         "[GOLD ONLY] Could not select symbol: ",
+         symbol
+      );
 
-   return(
-      spread<=InpMaxSpreadPts
-   );
+      return false;
+   }
+
+   return true;
 }
 
 //+------------------------------------------------------------------+
-//| Current broker/server day start                                  |
+//| History validation                                               |
+//+------------------------------------------------------------------+
+
+bool HasRequiredHistory()
+{
+   string symbol =
+      _Symbol;
+
+   if(Bars(
+      symbol,
+      InpPrimaryTF) <
+      ICT_MIN_HISTORY_BARS)
+   {
+      return false;
+   }
+
+   if(Bars(
+      symbol,
+      InpIntermediateTF) <
+      ICT_MIN_HISTORY_BARS)
+   {
+      return false;
+   }
+
+   if(Bars(
+      symbol,
+      InpConfirmTF) <
+      ICT_MIN_HISTORY_BARS)
+   {
+      return false;
+   }
+
+   if(Bars(
+      symbol,
+      InpEntryTF) <
+      ICT_MIN_HISTORY_BARS)
+   {
+      return false;
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Current day start                                                |
 //+------------------------------------------------------------------+
 
 datetime GetDayStart()
@@ -378,37 +231,38 @@ datetime GetDayStart()
       dt
    );
 
-   dt.hour=0;
-   dt.min=0;
-   dt.sec=0;
+   dt.hour = 0;
+   dt.min  = 0;
+   dt.sec  = 0;
 
-   return(
-      StructToTime(dt)
-   );
+   return StructToTime(dt);
 }
 
 //+------------------------------------------------------------------+
-//| Daily protection state                                           |
+//| Update daily protection                                          |
 //+------------------------------------------------------------------+
 
-void UpdateDailyState()
+void UpdateDailyProtection()
 {
-   datetime today=
+   datetime today =
       GetDayStart();
 
-   if(g_dayStart!=today)
+   if(g_dayStart != today)
    {
-      g_dayStart=today;
+      g_dayStart =
+         today;
 
-      g_dayStartEquity=
+      g_dayStartEquity =
          AccountInfoDouble(
             ACCOUNT_EQUITY
          );
 
-      g_dailyLocked=false;
+      g_dailyLocked =
+         false;
 
       Print(
-         "[DAILY] New trading day. Start equity=",
+         "[DAILY] New trading day. "
+         "Starting equity=",
          DoubleToString(
             g_dayStartEquity,
             2
@@ -416,803 +270,1745 @@ void UpdateDailyState()
       );
    }
 
-   if(g_dayStartEquity<=0.0)
+   if(g_dayStartEquity <= 0.0)
    {
-      g_dayStartEquity=
+      g_dayStartEquity =
          AccountInfoDouble(
             ACCOUNT_EQUITY
          );
    }
 
-   double equity=
+   double equity =
       AccountInfoDouble(
          ACCOUNT_EQUITY
       );
 
-   if(equity<=0.0)
-      return;
-
-   double dailyChangeMoney=
-      equity-g_dayStartEquity;
-
-   double dailyLossPct=0.0;
-
-   if(
-      g_dayStartEquity>0.0 &&
-      dailyChangeMoney<0.0
-   )
+   if(equity <= 0.0 ||
+      g_dayStartEquity <= 0.0)
    {
-      dailyLossPct=
-         (-dailyChangeMoney/
-          g_dayStartEquity)*
+      return;
+   }
+
+   double change =
+      equity -
+      g_dayStartEquity;
+
+   double lossPct = 0.0;
+
+   if(change < 0.0)
+   {
+      lossPct =
+         (-change /
+          g_dayStartEquity) *
          100.0;
    }
 
    if(
-      InpDailyLossLimitPct>0.0 &&
-      dailyLossPct>=InpDailyLossLimitPct
+      InpDailyLossLimitPct > 0.0 &&
+      lossPct >=
+      InpDailyLossLimitPct
    )
    {
       if(!g_dailyLocked)
       {
          Print(
-            "[DAILY SAFETY] Daily loss limit reached. New entries locked."
+            "[DAILY SAFETY] "
+            "Daily loss limit reached."
          );
       }
 
-      g_dailyLocked=true;
+      g_dailyLocked =
+         true;
    }
 
    if(
-      InpDailyProfitTargetMoney>0.0 &&
-      dailyChangeMoney>=
-      InpDailyProfitTargetMoney
+      InpDailyProfitTargetPct > 0.0 &&
+      change > 0.0
    )
    {
-      if(!g_dailyLocked)
-      {
-         Print(
-            "[DAILY SAFETY] Daily profit target reached. New entries locked."
-         );
-      }
+      double profitPct =
+         (change /
+          g_dayStartEquity) *
+         100.0;
 
-      g_dailyLocked=true;
+      if(
+         profitPct >=
+         InpDailyProfitTargetPct
+      )
+      {
+         if(!g_dailyLocked)
+         {
+            Print(
+               "[DAILY SAFETY] "
+               "Daily profit target reached."
+            );
+         }
+
+         g_dailyLocked =
+            true;
+      }
    }
 }
 
 //+------------------------------------------------------------------+
-//| Daily entry permission                                           |
+//| Daily permission                                                |
 //+------------------------------------------------------------------+
 
 bool IsDailyTradingAllowed()
 {
-   UpdateDailyState();
+   UpdateDailyProtection();
 
-   return(!g_dailyLocked);
+   return !g_dailyLocked;
 }
 
 //+------------------------------------------------------------------+
-//| Combined new-entry permission                                    |
+//| Growth controller initialization                                 |
+//+------------------------------------------------------------------+
+
+bool InitializeGrowth()
+{
+   GC_Reset(
+      g_growthController
+   );
+
+   double equity =
+      AccountInfoDouble(
+         ACCOUNT_EQUITY
+      );
+
+   if(equity <= 0.0)
+   {
+      Print(
+         "[GROWTH] Invalid starting equity."
+      );
+
+      return false;
+   }
+
+   /*
+      GrowthController is advisory only.
+      It must never override RiskEngine.
+   */
+
+   if(GC_LoadState(
+      g_growthController,
+      InpMagicNumber))
+   {
+      GC_Update(
+         g_growthController,
+         equity
+      );
+
+      Print(
+         "[GROWTH] Existing growth cycle restored."
+      );
+
+      GC_PrintStatus(
+         g_growthController
+      );
+
+      return true;
+   }
+
+   if(!GC_InitializeNew(
+      g_growthController,
+      InpMagicNumber,
+      equity))
+   {
+      Print(
+         "[GROWTH] Failed to initialize."
+      );
+
+      return false;
+   }
+
+   GC_Update(
+      g_growthController,
+      equity
+   );
+
+   Print(
+      "[GROWTH] New growth cycle initialized."
+   );
+
+   GC_PrintStatus(
+      g_growthController
+   );
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Update growth controller                                         |
+//+------------------------------------------------------------------+
+
+void UpdateGrowth()
+{
+   if(!g_growthController.initialized)
+      return;
+
+   double equity =
+      AccountInfoDouble(
+         ACCOUNT_EQUITY
+      );
+
+   if(equity <= 0.0)
+      return;
+
+   GC_Update(
+      g_growthController,
+      equity
+   );
+}
+
+//+------------------------------------------------------------------+
+//| Growth permission                                                |
+//+------------------------------------------------------------------+
+
+bool IsGrowthAllowed()
+{
+   UpdateGrowth();
+
+   if(!g_growthController.initialized)
+      return false;
+
+   /*
+      Reaching the growth objective does not
+      force a trade. It only prevents new
+      entries when the objective is reached.
+   */
+
+   if(GC_TargetReached(
+      g_growthController))
+   {
+      return false;
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| New-entry permission                                             |
 //+------------------------------------------------------------------+
 
 bool IsNewEntryAllowed()
 {
    if(!InpEnableTrading)
-      return(false);
+      return false;
+
+   if(ICT_DEVELOPMENT_MODE)
+      return false;
 
    if(!IsDailyTradingAllowed())
-      return(false);
+      return false;
 
-   if(!IsGrowthTradingAllowed())
-      return(false);
+   if(!IsGrowthAllowed())
+      return false;
 
-   return(true);
+   return true;
 }
 
 //+------------------------------------------------------------------+
-//| Direction agreement                                              |
+//| New H4 bar                                                       |
 //+------------------------------------------------------------------+
 
-bool IsConfirmationDirectionValid(
-   const ENUM_STRUCTURE_DIRECTION h4Direction,
-   const ENUM_STRUCTURE_DIRECTION lowerDirection)
+bool IsNewH4Bar()
 {
-   return(
-      h4Direction!=STRUCTURE_UNKNOWN &&
-      lowerDirection==h4Direction
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Validate M15 confirmation                                        |
-//+------------------------------------------------------------------+
-
-bool ValidateM15Confirmation(
-   const M15Confirmation &c,
-   const ENUM_STRUCTURE_DIRECTION expectedDirection)
-{
-   if(!c.valid || !c.confirmed)
-      return(false);
-
-   if(!IsConfirmationDirectionValid(
-      expectedDirection,
-      c.direction))
-      return(false);
-
-   if(!c.displacement)
-      return(false);
-
-   if(!c.mss && !c.bos)
-      return(false);
-
-   if(
-      ICT_REQUIRE_FVG &&
-      !c.fvgPresent
-   )
-      return(false);
-
-   if(
-      c.confirmationTime<=0 ||
-      c.confirmationShift<1
-   )
-      return(false);
-
-   if(c.brokenLevel<=0.0)
-      return(false);
-
-   return(true);
-}
-//+------------------------------------------------------------------+
-//| Analyze H4 market structure                                      |
-//+------------------------------------------------------------------+
-
-bool AnalyzeH4Structure(
-   const string symbol,
-   ENUM_STRUCTURE_DIRECTION &direction)
-{
-   direction=STRUCTURE_UNKNOWN;
-
-   if(Bars(
-      symbol,
-      InpPrimaryTF
-   )<ICT_MIN_HISTORY_BARS)
-      return(false);
-
-   StructureSignal signal;
-
-   if(!SS_BuildStructureSignal(
-      symbol,
-      InpPrimaryTF,
-      InpStructureLookback,
-      signal))
-   {
-      return(false);
-   }
-
-   if(!signal.valid)
-      return(false);
-
-   direction=
-      signal.direction;
-
-   return(
-      direction!=STRUCTURE_UNKNOWN
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Analyze H4 liquidity                                             |
-//+------------------------------------------------------------------+
-
-bool AnalyzeH4Liquidity(
-   const string symbol,
-   const ENUM_STRUCTURE_DIRECTION direction)
-{
-   if(direction==STRUCTURE_UNKNOWN)
-      return(false);
-
-   LiquidityZone liquidity;
-
-   if(!LQ_FindLiquidity(
-      symbol,
-      InpPrimaryTF,
-      direction,
-      InpStructureLookback,
-      liquidity))
-   {
-      return(false);
-   }
-
-   return(liquidity.valid);
-}
-
-//+------------------------------------------------------------------+
-//| Analyze H4 FVG                                                   |
-//+------------------------------------------------------------------+
-
-bool AnalyzeH4FVG(
-   const string symbol,
-   const ENUM_STRUCTURE_DIRECTION direction)
-{
-   if(!ICT_REQUIRE_FVG)
-      return(true);
-
-   if(direction==STRUCTURE_UNKNOWN)
-      return(false);
-
-   FVGZone fvg;
-
-   if(!FVG_FindLatest(
-      symbol,
-      InpPrimaryTF,
-      direction,
-      InpFVGScanLookback,
-      fvg))
-   {
-      return(false);
-   }
-
-   return(fvg.valid);
-}
-
-//+------------------------------------------------------------------+
-//| Analyze H4 order block                                           |
-//+------------------------------------------------------------------+
-
-bool AnalyzeH4OrderBlock(
-   const string symbol,
-   const ENUM_STRUCTURE_DIRECTION direction)
-{
-   if(!ICT_ENABLE_ORDER_BLOCK)
-      return(true);
-
-   if(direction==STRUCTURE_UNKNOWN)
-      return(false);
-
-   OrderBlockZone ob;
-
-   if(!OB_FindLatest(
-      symbol,
-      InpPrimaryTF,
-      direction,
-      InpOBScanLookback,
-      ob))
-   {
-      return(false);
-   }
-
-   return(ob.valid);
-}
-
-//+------------------------------------------------------------------+
-//| Build M15 confirmation                                           |
-//+------------------------------------------------------------------+
-
-bool BuildM15Confirmation(
-   const string symbol,
-   const ENUM_STRUCTURE_DIRECTION expectedDirection)
-{
-   ResetM15Confirmation(
-      g_m15Confirmation
-   );
-
-   if(expectedDirection==
-      STRUCTURE_UNKNOWN)
-      return(false);
-
-   if(Bars(
-      symbol,
-      InpConfirmTF
-   )<ICT_MIN_HISTORY_BARS)
-      return(false);
-
-   //-----------------------------------------------------------------
-   // M15 structure
-   //-----------------------------------------------------------------
-
-   StructureSignal m15Structure;
-
-   if(!SS_BuildStructureSignal(
-      symbol,
-      InpConfirmTF,
-      InpStructureLookback,
-      m15Structure))
-   {
-      return(false);
-   }
-
-   if(!m15Structure.valid)
-      return(false);
-
-   if(m15Structure.direction!=
-      expectedDirection)
-   {
-      return(false);
-   }
-
-   g_m15Confirmation.direction=
-      m15Structure.direction;
-
-   //-----------------------------------------------------------------
-   // Structure confirmation
-   //-----------------------------------------------------------------
-
-   g_m15Confirmation.mss=
-      m15Structure.mss;
-
-   g_m15Confirmation.bos=
-      m15Structure.bos;
-
-   g_m15Confirmation.displacement=
-      m15Structure.displacement;
-
-   g_m15Confirmation.brokenLevel=
-      m15Structure.brokenLevel;
-
-   //-----------------------------------------------------------------
-   // FVG confirmation
-   //-----------------------------------------------------------------
-
-   FVGZone m15FVG;
-
-   bool fvgFound=
-      FVG_FindLatest(
-         symbol,
-         InpConfirmTF,
-         expectedDirection,
-         InpFVGScanLookback,
-         m15FVG
+   datetime currentBar =
+      iTime(
+         _Symbol,
+         InpPrimaryTF,
+         0
       );
 
-   g_m15Confirmation.fvgPresent=
-      fvgFound &&
-      m15FVG.valid;
+   if(currentBar <= 0)
+      return false;
 
-   //-----------------------------------------------------------------
-   // Order block confirmation
-   //-----------------------------------------------------------------
-
-   if(ICT_ENABLE_ORDER_BLOCK)
+   if(currentBar ==
+      g_lastH4Bar)
    {
-      OrderBlockZone m15OB;
+      return false;
+   }
 
-      bool obFound=
-         OB_FindLatest(
-            symbol,
-            InpConfirmTF,
-            expectedDirection,
-            InpOBScanLookback,
-            m15OB
+   g_lastH4Bar =
+      currentBar;
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| New H1 bar                                                       |
+//+------------------------------------------------------------------+
+
+bool IsNewH1Bar()
+{
+   datetime currentBar =
+      iTime(
+         _Symbol,
+         InpIntermediateTF,
+         0
+      );
+
+   if(currentBar <= 0)
+      return false;
+
+   if(currentBar ==
+      g_lastH1Bar)
+   {
+      return false;
+   }
+
+   g_lastH1Bar =
+      currentBar;
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| New M15 bar                                                      |
+//+------------------------------------------------------------------+
+
+bool IsNewM15Bar()
+{
+   datetime currentBar =
+      iTime(
+         _Symbol,
+         InpConfirmTF,
+         0
+      );
+
+   if(currentBar <= 0)
+      return false;
+
+   if(currentBar ==
+      g_lastM15Bar)
+   {
+      return false;
+   }
+
+   g_lastM15Bar =
+      currentBar;
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| New M5 bar                                                       |
+//+------------------------------------------------------------------+
+
+bool IsNewM5Bar()
+{
+   datetime currentBar =
+      iTime(
+         _Symbol,
+         InpEntryTF,
+         0
+      );
+
+   if(currentBar <= 0)
+      return false;
+
+   if(currentBar ==
+      g_lastM5Bar)
+   {
+      return false;
+   }
+
+   g_lastM5Bar =
+      currentBar;
+
+   return true;
+}
+//+------------------------------------------------------------------+
+//| Spread validation                                                |
+//+------------------------------------------------------------------+
+
+bool IsSpreadAcceptable()
+{
+   MqlTick tick;
+
+   if(!SymbolInfoTick(
+      _Symbol,
+      tick))
+   {
+      return false;
+   }
+
+   double point =
+      SymbolInfoDouble(
+         _Symbol,
+         SYMBOL_POINT
+      );
+
+   if(point <= 0.0)
+      return false;
+
+   double spread =
+      (tick.ask - tick.bid) /
+      point;
+
+   if(spread < 0.0)
+      return false;
+
+   return spread <=
+          InpMaxSpreadPts;
+}
+
+//+------------------------------------------------------------------+
+//| Broker trading mode validation                                   |
+//+------------------------------------------------------------------+
+
+bool IsBrokerTradingAllowed()
+{
+   long mode = 0;
+
+   if(!SymbolInfoInteger(
+      _Symbol,
+      SYMBOL_TRADE_MODE,
+      mode))
+   {
+      return false;
+   }
+
+   return mode !=
+          SYMBOL_TRADE_MODE_DISABLED;
+}
+
+//+------------------------------------------------------------------+
+//| Position count                                                   |
+//+------------------------------------------------------------------+
+
+int CountOurPositions()
+{
+   int count = 0;
+
+   for(
+      int i = PositionsTotal() - 1;
+      i >= 0;
+      i--
+   )
+   {
+      ulong ticket =
+         PositionGetTicket(i);
+
+      if(ticket == 0)
+         continue;
+
+      if(!PositionSelectByTicket(
+         ticket))
+      {
+         continue;
+      }
+
+      if(
+         (ulong)PositionGetInteger(
+            POSITION_MAGIC
+         ) !=
+         InpMagicNumber
+      )
+      {
+         continue;
+      }
+
+      count++;
+   }
+
+   return count;
+}
+
+//+------------------------------------------------------------------+
+//| Gold position count                                              |
+//+------------------------------------------------------------------+
+
+int CountGoldPositions()
+{
+   int count = 0;
+
+   for(
+      int i = PositionsTotal() - 1;
+      i >= 0;
+      i--
+   )
+   {
+      ulong ticket =
+         PositionGetTicket(i);
+
+      if(ticket == 0)
+         continue;
+
+      if(!PositionSelectByTicket(
+         ticket))
+      {
+         continue;
+      }
+
+      if(
+         (ulong)PositionGetInteger(
+            POSITION_MAGIC
+         ) !=
+         InpMagicNumber
+      )
+      {
+         continue;
+      }
+
+      string symbol =
+         PositionGetString(
+            POSITION_SYMBOL
          );
 
-      g_m15Confirmation.orderBlockPresent=
-         obFound &&
-         m15OB.valid;
+      if(IsGoldSymbol(symbol))
+         count++;
+   }
+
+   return count;
+}
+
+//+------------------------------------------------------------------+
+//| Existing gold position                                           |
+//+------------------------------------------------------------------+
+
+bool HasGoldPosition()
+{
+   return CountGoldPositions() > 0;
+}
+
+//+------------------------------------------------------------------+
+//| Position direction                                               |
+//+------------------------------------------------------------------+
+
+ENUM_POSITION_TYPE GetGoldPositionType()
+{
+   for(
+      int i = PositionsTotal() - 1;
+      i >= 0;
+      i--
+   )
+   {
+      ulong ticket =
+         PositionGetTicket(i);
+
+      if(ticket == 0)
+         continue;
+
+      if(!PositionSelectByTicket(
+         ticket))
+      {
+         continue;
+      }
+
+      if(
+         (ulong)PositionGetInteger(
+            POSITION_MAGIC
+         ) !=
+         InpMagicNumber
+      )
+      {
+         continue;
+      }
+
+      string symbol =
+         PositionGetString(
+            POSITION_SYMBOL
+         );
+
+      if(!IsGoldSymbol(symbol))
+         continue;
+
+      return(
+         (ENUM_POSITION_TYPE)
+         PositionGetInteger(
+            POSITION_TYPE
+         )
+      );
+   }
+
+   return POSITION_TYPE_BUY;
+}
+
+//+------------------------------------------------------------------+
+//| Opposite gold position check                                     |
+//+------------------------------------------------------------------+
+
+bool HasOppositeGoldPosition(
+   const ENUM_ORDER_TYPE orderType)
+{
+   ENUM_POSITION_TYPE wanted;
+
+   if(orderType ==
+      ORDER_TYPE_BUY)
+   {
+      wanted =
+         POSITION_TYPE_SELL;
+   }
+   else if(orderType ==
+           ORDER_TYPE_SELL)
+   {
+      wanted =
+         POSITION_TYPE_BUY;
    }
    else
    {
-      g_m15Confirmation.orderBlockPresent=
-         true;
+      return true;
    }
 
-   //-----------------------------------------------------------------
-   // Final M15 state
-   //-----------------------------------------------------------------
-
-   g_m15Confirmation.confirmed=
-      g_m15Confirmation.displacement &&
-      (
-         g_m15Confirmation.mss ||
-         g_m15Confirmation.bos
-      );
-
-   if(
-      ICT_REQUIRE_FVG &&
-      !g_m15Confirmation.fvgPresent
+   for(
+      int i = PositionsTotal() - 1;
+      i >= 0;
+      i--
    )
    {
-      g_m15Confirmation.confirmed=false;
-   }
+      ulong ticket =
+         PositionGetTicket(i);
 
-   if(!g_m15Confirmation.confirmed)
-   {
-      g_m15Confirmation.valid=false;
-
-      g_m15Confirmation.state=
-         CONFIRMATION_WAITING;
-
-      g_m15Confirmation.reason=
-         "M15 confirmation incomplete";
-
-      return(false);
-   }
-
-   g_m15Confirmation.valid=true;
-
-   g_m15Confirmation.state=
-      CONFIRMATION_CONFIRMED;
-
-   g_m15Confirmation.confirmationTime=
-      iTime(
-         symbol,
-         InpConfirmTF,
-         1
-      );
-
-   g_m15Confirmation.confirmationShift=1;
-
-   g_m15Confirmation.reason=
-      "M15 displacement + structure confirmation";
-
-   return(true);
-}
-
-//+------------------------------------------------------------------+
-//| Build M5 confirmation                                            |
-//+------------------------------------------------------------------+
-
-bool BuildM5Confirmation(
-   const string symbol,
-   const ENUM_STRUCTURE_DIRECTION expectedDirection)
-{
-   if(expectedDirection==
-      STRUCTURE_UNKNOWN)
-      return(false);
-
-   if(Bars(
-      symbol,
-      InpEntryTF
-   )<ICT_MIN_HISTORY_BARS)
-      return(false);
-
-   M5Confirmation confirmation;
-
-   if(!M5_BuildConfirmation(
-      symbol,
-      InpEntryTF,
-      expectedDirection,
-      ICT_M5_CONFIRM_MAX_BARS,
-      confirmation))
-   {
-      return(false);
-   }
-
-   if(!confirmation.valid)
-      return(false);
-
-   g_m5Confirmation=
-      confirmation;
-
-   return(true);
-}
-
-//+------------------------------------------------------------------+
-//| Scan normal ICT setup                                            |
-//+------------------------------------------------------------------+
-
-bool ScanNormalSetup(
-   const string symbol)
-{
-   ENUM_STRUCTURE_DIRECTION h4Direction;
-
-   if(!AnalyzeH4Structure(
-      symbol,
-      h4Direction))
-   {
-      g_h4SetupActive=false;
-      return(false);
-   }
-
-   //-----------------------------------------------------------------
-   // Liquidity must exist in the expected context.
-   //-----------------------------------------------------------------
-
-   if(!AnalyzeH4Liquidity(
-      symbol,
-      h4Direction))
-   {
-      g_h4SetupActive=false;
-      return(false);
-   }
-
-   //-----------------------------------------------------------------
-   // FVG context.
-   //-----------------------------------------------------------------
-
-   if(!AnalyzeH4FVG(
-      symbol,
-      h4Direction))
-   {
-      g_h4SetupActive=false;
-      return(false);
-   }
-
-   //-----------------------------------------------------------------
-   // Optional order block context.
-   //-----------------------------------------------------------------
-
-   if(!AnalyzeH4OrderBlock(
-      symbol,
-      h4Direction))
-   {
-      g_h4SetupActive=false;
-      return(false);
-   }
-
-   //-----------------------------------------------------------------
-   // Save H4 setup.
-   //-----------------------------------------------------------------
-
-   g_h4SetupActive=true;
-
-   g_h4SetupDirection=
-      h4Direction;
-
-   g_h4SetupTime=
-      iTime(
-         symbol,
-         InpPrimaryTF,
-         1
-      );
-
-   g_h4SetupShift=1;
-
-   //-----------------------------------------------------------------
-   // M15 confirmation.
-   //-----------------------------------------------------------------
-
-   if(!BuildM15Confirmation(
-      symbol,
-      h4Direction))
-   {
-      return(false);
-   }
-
-   //-----------------------------------------------------------------
-   // M5 confirmation.
-   //-----------------------------------------------------------------
-
-   if(!BuildM5Confirmation(
-      symbol,
-      h4Direction))
-   {
-      return(false);
-   }
-
-   return(true);
-}
-
-//+------------------------------------------------------------------+
-//| Print normal setup                                               |
-//+------------------------------------------------------------------+
-
-void PrintNormalSetup(
-   const string symbol)
-{
-   if(!g_h4SetupActive)
-      return;
-
-   Print(
-      "[ICT SETUP] ",
-      symbol,
-      " | Direction=",
-      EnumToString(
-         g_h4SetupDirection
-      ),
-      " | H4Time=",
-      TimeToString(
-         g_h4SetupTime
-      ),
-      " | M15=",
-      g_m15Confirmation.confirmed,
-      " | M5=",
-      g_m5Confirmation.valid
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Scan one symbol for normal mode                                  |
-//+------------------------------------------------------------------+
-
-void ProcessNormalSymbol(
-   const string symbol)
-{
-   if(!IsSymbolTradable(symbol))
-      return;
-
-   if(!IsSpreadAcceptable(symbol))
-      return;
-
-   if(!ScanNormalSetup(symbol))
-      return;
-
-   PrintNormalSetup(symbol);
-
-   //-----------------------------------------------------------------
-   // The existing normal execution engine remains the authority for
-   // actual order construction/execution.
-   //
-   // During this development build we do not force an order here.
-   // This prevents accidental duplicate execution while the modules
-   // are being validated.
-   //-----------------------------------------------------------------
-
-   if(!IsNewEntryAllowed())
-      return;
-
-   Print(
-      "[ICT] Valid normal setup detected on ",
-      symbol,
-      ". Normal execution remains protected by TradeEngine/RiskEngine."
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Process one scalper symbol                                       |
-//+------------------------------------------------------------------+
-
-void ProcessScalperSymbol(
-   const string symbol)
-{
-   if(!IsSymbolTradable(symbol))
-      return;
-
-   if(!IsSpreadAcceptable(symbol))
-      return;
-
-   if(!IsNewEntryAllowed())
-      return;
-
-   //-----------------------------------------------------------------
-   // TradeEngine handles the complete M1 signal/execution pipeline.
-   //-----------------------------------------------------------------
-
-   TE_ProcessScalp(
-      g_tradeEngine,
-      Trade,
-      symbol,
-      InpRiskPercent,
-      InpMaxTotalRiskPct,
-      InpMagicNumber,
-      InpScalpMinScore,
-      InpScalpMaxHoldSeconds,
-      InpScalpCooldownSeconds,
-      InpScalpMaxPositions,
-      InpScalpMaxSymbolPositions,
-      InpMaxSpreadPts,
-      InpEnableTrading
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Manage existing scalper trades                                   |
-//+------------------------------------------------------------------+
-
-void ManageScalperSymbol(
-   const string symbol)
-{
-   TE_ManageScalps(
-      g_tradeEngine,
-      Trade,
-      symbol,
-      InpScalpMaxHoldSeconds,
-      InpScalpCooldownSeconds,
-      InpMagicNumber
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Process one market symbol                                        |
-//+------------------------------------------------------------------+
-
-void ProcessSymbol(
-   const string symbol)
-{
-   if(symbol=="")
-      return;
-
-   if(!IsSymbolTradable(symbol))
-      return;
-
-   //-----------------------------------------------------------------
-   // Always manage existing scalper positions first.
-   //-----------------------------------------------------------------
-
-   if(
-      InpTradingMode==
-         EA_MODE_SCALPER ||
-      InpTradingMode==
-         EA_MODE_AUTO
-   )
-   {
-      ManageScalperSymbol(symbol);
-   }
-
-   //-----------------------------------------------------------------
-   // New entries require all safety permissions.
-   //-----------------------------------------------------------------
-
-   if(!IsNewEntryAllowed())
-      return;
-
-   //-----------------------------------------------------------------
-   // Scalper
-   //-----------------------------------------------------------------
-
-   if(
-      InpTradingMode==
-         EA_MODE_SCALPER ||
-      InpTradingMode==
-         EA_MODE_AUTO
-   )
-   {
-      ProcessScalperSymbol(symbol);
-   }
-
-   //-----------------------------------------------------------------
-   // Normal ICT engine
-   //-----------------------------------------------------------------
-
-   if(
-      InpTradingMode==
-         EA_MODE_NORMAL ||
-      InpTradingMode==
-         EA_MODE_AUTO
-   )
-   {
-      ProcessNormalSymbol(symbol);
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Scan Market Watch                                                |
-//+------------------------------------------------------------------+
-
-void ScanMarketWatch()
-{
-   int total=
-      SymbolsTotal(
-         true
-      );
-
-   for(int i=0;i<total;i++)
-   {
-      string symbol=
-         SymbolName(
-            i,
-            true
-         );
-
-      if(symbol=="")
+      if(ticket == 0)
          continue;
 
-      ProcessSymbol(symbol);
+      if(!PositionSelectByTicket(
+         ticket))
+      {
+         continue;
+      }
+
+      if(
+         (ulong)PositionGetInteger(
+            POSITION_MAGIC
+         ) !=
+         InpMagicNumber
+      )
+      {
+         continue;
+      }
+
+      string symbol =
+         PositionGetString(
+            POSITION_SYMBOL
+         );
+
+      if(!IsGoldSymbol(symbol))
+         continue;
+
+      ENUM_POSITION_TYPE type =
+         (ENUM_POSITION_TYPE)
+         PositionGetInteger(
+            POSITION_TYPE
+         );
+
+      if(type == wanted)
+         return true;
    }
+
+   return false;
 }
 
 //+------------------------------------------------------------------+
-//| Scan current chart symbol                                       |
+//| Current gold entry price                                         |
 //+------------------------------------------------------------------+
 
-void ScanCurrentSymbol()
+double GetEntryPrice(
+   const ENUM_STRATEGY_DIRECTION direction)
 {
-   string symbol=
-      _Symbol;
+   MqlTick tick;
 
-   if(symbol=="")
+   if(!SymbolInfoTick(
+      _Symbol,
+      tick))
+   {
+      return 0.0;
+   }
+
+   if(direction ==
+      STRATEGY_DIRECTION_BUY)
+   {
+      return tick.ask;
+   }
+
+   if(direction ==
+      STRATEGY_DIRECTION_SELL)
+   {
+      return tick.bid;
+   }
+
+   return 0.0;
+}
+
+//+------------------------------------------------------------------+
+//| Validate candidate price levels                                  |
+//+------------------------------------------------------------------+
+
+bool ValidateTradeLevels(
+   const ConfluenceResult &result)
+{
+   if(!result.actionable)
+      return false;
+
+   if(result.entry <= 0.0 ||
+      result.stopLoss <= 0.0 ||
+      result.takeProfit <= 0.0)
+   {
+      return false;
+   }
+
+   if(result.direction ==
+      STRATEGY_DIRECTION_BUY)
+   {
+      if(result.stopLoss >=
+         result.entry)
+      {
+         return false;
+      }
+
+      if(result.takeProfit <=
+         result.entry)
+      {
+         return false;
+      }
+   }
+
+   if(result.direction ==
+      STRATEGY_DIRECTION_SELL)
+   {
+      if(result.stopLoss <=
+         result.entry)
+      {
+         return false;
+      }
+
+      if(result.takeProfit >=
+         result.entry)
+      {
+         return false;
+      }
+   }
+
+   double risk =
+      MathAbs(
+         result.entry -
+         result.stopLoss
+      );
+
+   double reward =
+      MathAbs(
+         result.takeProfit -
+         result.entry
+      );
+
+   if(risk <= 0.0 ||
+      reward <= 0.0)
+   {
+      return false;
+   }
+
+   double rr =
+      reward / risk;
+
+   if(rr <
+      InpMinimumRewardRisk)
+   {
+      return false;
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Synchronize entry to current market                              |
+//+------------------------------------------------------------------+
+
+bool SynchronizeEntryPrice(
+   ConfluenceResult &result)
+{
+   double current =
+      GetEntryPrice(
+         result.direction
+      );
+
+   if(current <= 0.0)
+      return false;
+
+   result.entry =
+      current;
+
+   double risk =
+      MathAbs(
+         result.entry -
+         result.stopLoss
+      );
+
+   if(risk <= 0.0)
+      return false;
+
+   /*
+      Keep the structural stop.
+      Recalculate TP from the same minimum
+      reward/risk requirement if necessary.
+   */
+
+   if(result.direction ==
+      STRATEGY_DIRECTION_BUY)
+   {
+      if(result.stopLoss >=
+         result.entry)
+      {
+         return false;
+      }
+
+      double minimumTP =
+         result.entry +
+         risk *
+         InpMinimumRewardRisk;
+
+      if(result.takeProfit <
+         minimumTP)
+      {
+         result.takeProfit =
+            minimumTP;
+      }
+   }
+   else if(result.direction ==
+           STRATEGY_DIRECTION_SELL)
+   {
+      if(result.stopLoss <=
+         result.entry)
+      {
+         return false;
+      }
+
+      double minimumTP =
+         result.entry -
+         risk *
+         InpMinimumRewardRisk;
+
+      if(result.takeProfit >
+         minimumTP)
+      {
+         result.takeProfit =
+            minimumTP;
+      }
+   }
+   else
+   {
+      return false;
+   }
+
+   result.rewardRisk =
+      MathAbs(
+         result.takeProfit -
+         result.entry
+      ) /
+      risk;
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Prepare risk-engine candidate                                    |
+//+------------------------------------------------------------------+
+
+bool PrepareRiskCandidate(
+   ConfluenceResult &result,
+   ExecutionResult &execution)
+{
+   ResetExecutionResult(
+      execution
+   );
+
+   if(!result.actionable)
+   {
+      execution.reason =
+         "Confluence result is not actionable.";
+
+      return false;
+   }
+
+   if(!ValidateTradeLevels(
+      result))
+   {
+      execution.reason =
+         "Trade levels failed validation.";
+
+      return false;
+   }
+
+   ENUM_ORDER_TYPE orderType;
+
+   if(result.direction ==
+      STRATEGY_DIRECTION_BUY)
+   {
+      orderType =
+         ORDER_TYPE_BUY;
+   }
+   else if(result.direction ==
+           STRATEGY_DIRECTION_SELL)
+   {
+      orderType =
+         ORDER_TYPE_SELL;
+   }
+   else
+   {
+      execution.reason =
+         "No valid trade direction.";
+
+      return false;
+   }
+
+   /*
+      ExecutionEngine performs the final broker,
+      risk, volume, duplicate-position and
+      development-mode protection.
+   */
+
+   bool valid =
+      EX_ValidateCandidate(
+         _Symbol,
+         orderType,
+         result.entry,
+         result.stopLoss,
+         result.takeProfit,
+         InpRiskPercent,
+         InpMaxTotalRiskPct,
+         InpMagicNumber,
+         ICT_MAX_TOTAL_POSITIONS,
+         ICT_MAX_SYMBOL_POSITIONS,
+         InpMaxSpreadPts,
+         InpEnableTrading,
+         execution
+      );
+
+   if(!valid)
+   {
+      return false;
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Print risk candidate                                             |
+//+------------------------------------------------------------------+
+
+void PrintRiskCandidate(
+   const ConfluenceResult &result,
+   const ExecutionResult &execution)
+{
+   string direction =
+      "NONE";
+
+   if(result.direction ==
+      STRATEGY_DIRECTION_BUY)
+   {
+      direction =
+         "BUY";
+   }
+   else if(result.direction ==
+           STRATEGY_DIRECTION_SELL)
+   {
+      direction =
+         "SELL";
+   }
+
+   Print(
+      "[RISK CANDIDATE] ",
+      direction,
+      " Entry=",
+      DoubleToString(
+         result.entry,
+         _Digits),
+      " SL=",
+      DoubleToString(
+         result.stopLoss,
+         _Digits),
+      " TP=",
+      DoubleToString(
+         result.takeProfit,
+         _Digits),
+      " RR=",
+      DoubleToString(
+         result.rewardRisk,
+         2),
+      " Score=",
+      DoubleToString(
+         result.score,
+         1),
+      " Volume=",
+      DoubleToString(
+         execution.volume,
+         2),
+      " Risk=",
+      DoubleToString(
+         execution.riskMoney,
+         2)
+   );
+
+   Print(
+      "[RISK CANDIDATE] ",
+      execution.reason
+   );
+}
+
+//+------------------------------------------------------------------+
+//| Analyze gold                                                     |
+//+------------------------------------------------------------------+
+
+bool AnalyzeGold()
+{
+   CE_ResetResult(
+      g_buyResult
+   );
+
+   CE_ResetResult(
+      g_sellResult
+   );
+
+   CE_ResetResult(
+      g_bestResult
+   );
+
+   if(!ValidateGoldSymbol())
+      return false;
+
+   if(!HasRequiredHistory())
+   {
+      Print(
+         "[ANALYSIS] Waiting for required history."
+      );
+
+      return false;
+   }
+
+   if(!IsSpreadAcceptable())
+   {
+      Print(
+         "[ANALYSIS] Spread filter rejected current quote."
+      );
+
+      return false;
+   }
+
+   if(!CE_AnalyzeGold(
+      _Symbol,
+      g_buyResult,
+      g_sellResult,
+      g_bestResult))
+   {
+      return false;
+   }
+
+   g_lastAnalysisTime =
+      TimeCurrent();
+
+   return true;
+}
+//+------------------------------------------------------------------+
+//| Print complete confluence analysis                               |
+//+------------------------------------------------------------------+
+
+void PrintConfluenceAnalysis()
+{
+   Print(
+      "=================================================="
+   );
+
+   Print(
+      "[CONFLUENCE] GOLD ANALYSIS"
+   );
+
+   Print(
+      "Symbol: ",
+      _Symbol
+   );
+
+   Print(
+      "Minimum score: ",
+      DoubleToString(
+         InpMinimumConfluenceScore,
+         1
+      )
+   );
+
+   Print(
+      "Minimum RR: ",
+      DoubleToString(
+         InpMinimumRewardRisk,
+         2
+      )
+   );
+
+   CE_PrintResult(
+      "BUY CANDIDATE",
+      g_buyResult
+   );
+
+   CE_PrintResult(
+      "SELL CANDIDATE",
+      g_sellResult
+   );
+
+   CE_PrintResult(
+      "BEST CANDIDATE",
+      g_bestResult
+   );
+
+   Print(
+      "=================================================="
+   );
+}
+
+//+------------------------------------------------------------------+
+//| Validate final candidate                                        |
+//+------------------------------------------------------------------+
+
+bool ValidateFinalCandidate()
+{
+   if(!g_bestResult.valid)
+   {
+      Print(
+         "[FINAL] No valid confluence result."
+      );
+
+      return false;
+   }
+
+   if(!g_bestResult.actionable)
+   {
+      Print(
+         "[FINAL] Candidate is not actionable."
+      );
+
+      return false;
+   }
+
+   if(g_bestResult.score <
+      InpMinimumConfluenceScore)
+   {
+      Print(
+         "[FINAL] Confluence score too low: ",
+         DoubleToString(
+            g_bestResult.score,
+            1
+         )
+      );
+
+      return false;
+   }
+
+   if(g_bestResult.rewardRisk <
+      InpMinimumRewardRisk)
+   {
+      Print(
+         "[FINAL] Reward/risk too low: ",
+         DoubleToString(
+            g_bestResult.rewardRisk,
+            2
+         )
+      );
+
+      return false;
+   }
+
+   if(!ValidateTradeLevels(
+      g_bestResult))
+   {
+      Print(
+         "[FINAL] Trade levels invalid."
+      );
+
+      return false;
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Risk validation                                                  |
+//+------------------------------------------------------------------+
+
+bool ValidateRiskCandidate()
+{
+   ExecutionResult execution;
+
+   if(!PrepareRiskCandidate(
+      g_bestResult,
+      execution))
+   {
+      Print(
+         "[RISK] Candidate rejected: ",
+         execution.reason
+      );
+
+      return false;
+   }
+
+   PrintRiskCandidate(
+      g_bestResult,
+      execution
+   );
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Diagnostic analysis cycle                                        |
+//+------------------------------------------------------------------+
+
+void RunAnalysisCycle()
+{
+   if(!ValidateGoldSymbol())
       return;
 
-   ProcessSymbol(symbol);
+   if(!HasRequiredHistory())
+   {
+      Print(
+         "[ANALYSIS] Insufficient history."
+      );
+
+      return;
+   }
+
+   if(!AnalyzeGold())
+      return;
+
+   PrintConfluenceAnalysis();
+
+   if(!ValidateFinalCandidate())
+   {
+      Print(
+         "[ANALYSIS] No final trade candidate."
+      );
+
+      return;
+   }
+
+   /*
+      Risk validation is performed even while
+      execution is disabled. This allows the EA
+      to prove that its candidate would satisfy
+      broker/risk constraints without placing
+      an order.
+   */
+
+   ValidateRiskCandidate();
 }
 
+//+------------------------------------------------------------------+
+//| Execution gate                                                   |
+//+------------------------------------------------------------------+
+
+bool ExecutionGate()
+{
+   if(!InpEnableTrading)
+   {
+      Print(
+         "[EXECUTION] Trading disabled by input."
+      );
+
+      return false;
+   }
+
+   if(ICT_DEVELOPMENT_MODE)
+   {
+      Print(
+         "[EXECUTION] Development mode blocks trading."
+      );
+
+      return false;
+   }
+
+   if(!IsNewEntryAllowed())
+   {
+      Print(
+         "[EXECUTION] Entry permission denied."
+      );
+
+      return false;
+   }
+
+   if(!IsBrokerTradingAllowed())
+   {
+      Print(
+         "[EXECUTION] Broker trading mode disabled."
+      );
+
+      return false;
+   }
+
+   if(!IsSpreadAcceptable())
+   {
+      Print(
+         "[EXECUTION] Spread protection rejected entry."
+      );
+
+      return false;
+   }
+
+   if(CountOurPositions() >=
+      ICT_MAX_TOTAL_POSITIONS)
+   {
+      Print(
+         "[EXECUTION] Maximum EA positions reached."
+      );
+
+      return false;
+   }
+
+   if(CountGoldPositions() >=
+      ICT_MAX_SYMBOL_POSITIONS)
+   {
+      Print(
+         "[EXECUTION] Maximum gold positions reached."
+      );
+
+      return false;
+   }
+
+   if(ICT_BLOCK_DUPLICATE_SYMBOL &&
+      HasGoldPosition())
+   {
+      Print(
+         "[EXECUTION] Existing gold position blocks duplicate."
+      );
+
+      return false;
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Convert strategy direction                                      |
+//+------------------------------------------------------------------+
+
+ENUM_ORDER_TYPE DirectionToOrderType(
+   const ENUM_STRATEGY_DIRECTION direction)
+{
+   if(direction ==
+      STRATEGY_DIRECTION_BUY)
+   {
+      return ORDER_TYPE_BUY;
+   }
+
+   if(direction ==
+      STRATEGY_DIRECTION_SELL)
+   {
+      return ORDER_TYPE_SELL;
+   }
+
+   return WRONG_VALUE;
+}
+
+//+------------------------------------------------------------------+
+//| Execute final trade candidate                                    |
+//+------------------------------------------------------------------+
+
+bool ExecuteCandidate()
+{
+   if(!ExecutionGate())
+      return false;
+
+   if(!ValidateFinalCandidate())
+      return false;
+
+   ENUM_ORDER_TYPE orderType =
+      DirectionToOrderType(
+         g_bestResult.direction
+      );
+
+   if(orderType ==
+      WRONG_VALUE)
+   {
+      Print(
+         "[EXECUTION] Invalid direction."
+      );
+
+      return false;
+   }
+
+   if(
+      ICT_BLOCK_OPPOSITE_SYMBOL &&
+      HasOppositeGoldPosition(
+         orderType
+      )
+   )
+   {
+      Print(
+         "[EXECUTION] Opposite gold position exists."
+      );
+
+      return false;
+   }
+
+   ExecutionResult execution;
+
+   if(!PrepareRiskCandidate(
+      g_bestResult,
+      execution))
+   {
+      Print(
+         "[EXECUTION] Risk validation failed: ",
+         execution.reason
+      );
+
+      return false;
+   }
+
+   if(execution.volume <= 0.0)
+   {
+      Print(
+         "[EXECUTION] Broker-valid volume is zero."
+      );
+
+      return false;
+   }
+
+   /*
+      Final execution is deliberately isolated here.
+      During development, this function cannot pass
+      the development-mode gate.
+   */
+
+   Trade.SetExpertMagicNumber(
+      InpMagicNumber
+   );
+
+   Trade.SetDeviationInPoints(
+      InpDeviationPts
+   );
+
+   bool sent = false;
+
+   if(orderType ==
+      ORDER_TYPE_BUY)
+   {
+      sent =
+         Trade.Buy(
+            execution.volume,
+            _Symbol,
+            g_bestResult.entry,
+            g_bestResult.stopLoss,
+            g_bestResult.takeProfit,
+            "Gold Confluence BUY"
+         );
+   }
+   else if(orderType ==
+           ORDER_TYPE_SELL)
+   {
+      sent =
+         Trade.Sell(
+            execution.volume,
+            _Symbol,
+            g_bestResult.entry,
+            g_bestResult.stopLoss,
+            g_bestResult.takeProfit,
+            "Gold Confluence SELL"
+         );
+   }
+
+   if(!sent)
+   {
+      Print(
+         "[EXECUTION] Order failed. Retcode=",
+         Trade.ResultRetcode(),
+         " Description=",
+         Trade.ResultRetcodeDescription()
+      );
+
+      return false;
+   }
+
+   execution.executed =
+      true;
+
+   execution.ticket =
+      Trade.ResultOrder();
+
+   Print(
+      "[EXECUTION] GOLD TRADE OPENED. Ticket=",
+      execution.ticket,
+      " Volume=",
+      DoubleToString(
+         execution.volume,
+         2
+      )
+   );
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Process current market                                           |
+//+------------------------------------------------------------------+
+
+void ProcessMarket()
+{
+   /*
+      Primary analysis is driven by H4.
+      Lower timeframes confirm the setup.
+   */
+
+   if(!IsNewH4Bar())
+      return;
+
+   Print(
+      "[ENGINE] New H4 bar detected."
+   );
+
+   RunAnalysisCycle();
+
+   /*
+      No order can be sent while:
+      ICT_DEVELOPMENT_MODE == true
+      or
+      InpEnableTrading == false.
+   */
+
+   if(!g_bestResult.actionable)
+      return;
+
+   ExecuteCandidate();
+}
+
+//+------------------------------------------------------------------+
+//| Informational heartbeat                                          |
+//+------------------------------------------------------------------+
+
+void PrintHeartbeat()
+{
+   static datetime lastHeartbeat = 0;
+
+   datetime now =
+      TimeCurrent();
+
+   if(
+      lastHeartbeat > 0 &&
+      now - lastHeartbeat < 3600
+   )
+   {
+      return;
+   }
+
+   lastHeartbeat =
+      now;
+
+   Print(
+      "[HEARTBEAT] Gold EA active. "
+      "Symbol=",
+      _Symbol,
+      " Trading=",
+      InpEnableTrading
+      ? "ON"
+      : "OFF",
+      " DevelopmentMode=",
+      ICT_DEVELOPMENT_MODE
+      ? "ON"
+      : "OFF"
+   );
+}
 //+------------------------------------------------------------------+
 //| Expert initialization                                            |
 //+------------------------------------------------------------------+
 
 int OnInit()
 {
+   Print(
+      "=================================================="
+   );
+
+   Print(
+      "Exness Gold Multi-Strategy EA v1.00"
+   );
+
+   Print(
+      "=================================================="
+   );
+
    //-----------------------------------------------------------------
-   // Trade object configuration
+   // Gold-only protection
+   //-----------------------------------------------------------------
+
+   if(!ValidateGoldSymbol())
+   {
+      Print(
+         "[INIT] EA must be attached to XAUUSD."
+      );
+
+      return INIT_FAILED;
+   }
+
+   //-----------------------------------------------------------------
+   // Trading symbol
+   //-----------------------------------------------------------------
+
+   Print(
+      "[INIT] Gold symbol: ",
+      _Symbol
+   );
+
+   //-----------------------------------------------------------------
+   // Timeframes
+   //-----------------------------------------------------------------
+
+   Print(
+      "[INIT] Primary TF: ",
+      EnumToString(
+         InpPrimaryTF
+      )
+   );
+
+   Print(
+      "[INIT] Intermediate TF: ",
+      EnumToString(
+         InpIntermediateTF
+      )
+   );
+
+   Print(
+      "[INIT] Confirmation TF: ",
+      EnumToString(
+         InpConfirmTF
+      )
+   );
+
+   Print(
+      "[INIT] Entry TF: ",
+      EnumToString(
+         InpEntryTF
+      )
+   );
+
+   //-----------------------------------------------------------------
+   // Risk configuration
+   //-----------------------------------------------------------------
+
+   Print(
+      "[INIT] Risk percent: ",
+      DoubleToString(
+         InpRiskPercent,
+         2
+      )
+   );
+
+   Print(
+      "[INIT] Maximum total risk: ",
+      DoubleToString(
+         InpMaxTotalRiskPct,
+         2
+      )
+   );
+
+   Print(
+      "[INIT] Minimum confluence score: ",
+      DoubleToString(
+         InpMinimumConfluenceScore,
+         1
+      )
+   );
+
+   Print(
+      "[INIT] Minimum reward/risk: ",
+      DoubleToString(
+         InpMinimumRewardRisk,
+         2
+      )
+   );
+
+   //-----------------------------------------------------------------
+   // Position protection
+   //-----------------------------------------------------------------
+
+   Print(
+      "[INIT] Maximum total positions: ",
+      ICT_MAX_TOTAL_POSITIONS
+   );
+
+   Print(
+      "[INIT] Maximum gold positions: ",
+      ICT_MAX_SYMBOL_POSITIONS
+   );
+
+   //-----------------------------------------------------------------
+   // Development protection
+   //-----------------------------------------------------------------
+
+   Print(
+      "[INIT] Trading input: ",
+      InpEnableTrading
+      ? "ENABLED"
+      : "DISABLED"
+   );
+
+   Print(
+      "[INIT] Development mode: ",
+      ICT_DEVELOPMENT_MODE
+      ? "ACTIVE"
+      : "INACTIVE"
+   );
+
+   if(ICT_DEVELOPMENT_MODE)
+   {
+      Print(
+         "[INIT] SAFETY: execution is blocked."
+      );
+   }
+
+   //-----------------------------------------------------------------
+   // Growth controller
+   //-----------------------------------------------------------------
+
+   if(!InitializeGrowth())
+   {
+      Print(
+         "[INIT] Growth controller initialization failed."
+      );
+
+      /*
+         Growth control is advisory, but failure to
+         initialize means the EA should remain safe.
+      */
+
+      if(InpEnableTrading)
+      {
+         Print(
+            "[INIT] Trading requested but growth controller "
+            "is unavailable. Initialization stopped."
+         );
+
+         return INIT_FAILED;
+      }
+   }
+
+   //-----------------------------------------------------------------
+   // Daily protection
+   //-----------------------------------------------------------------
+
+   g_dayStart =
+      GetDayStart();
+
+   g_dayStartEquity =
+      AccountInfoDouble(
+         ACCOUNT_EQUITY
+      );
+
+   g_dailyLocked =
+      false;
+
+   //-----------------------------------------------------------------
+   // Reset analysis state
+   //-----------------------------------------------------------------
+
+   CE_ResetResult(
+      g_buyResult
+   );
+
+   CE_ResetResult(
+      g_sellResult
+   );
+
+   CE_ResetResult(
+      g_bestResult
+   );
+
+   //-----------------------------------------------------------------
+   // Configure CTrade
    //-----------------------------------------------------------------
 
    Trade.SetExpertMagicNumber(
@@ -1224,125 +2020,54 @@ int OnInit()
    );
 
    //-----------------------------------------------------------------
-   // State initialization
+   // Initial history check
    //-----------------------------------------------------------------
 
-   g_lastPrimaryBar=0;
-   g_lastConfirmBar=0;
-   g_lastEntryBar=0;
-   g_lastScalpEntryTime=0;
-
-   g_h4SetupActive=false;
-   g_h4SetupDirection=
-      STRUCTURE_UNKNOWN;
-
-   g_h4SetupTime=0;
-   g_h4SetupShift=-1;
-
-   ResetM15Confirmation(
-      g_m15Confirmation
-   );
-
-   //-----------------------------------------------------------------
-   // Daily state
-   //-----------------------------------------------------------------
-
-   g_dayStart=
-      GetDayStart();
-
-   g_dayStartEquity=
-      AccountInfoDouble(
-         ACCOUNT_EQUITY
-      );
-
-   g_dailyLocked=false;
-
-   //-----------------------------------------------------------------
-   // Trade engine
-   //-----------------------------------------------------------------
-
-   TE_Init(
-      g_tradeEngine,
-      InpMagicNumber,
-      InpTradingMode==EA_MODE_NORMAL,
-      InpTradingMode==EA_MODE_SCALPER,
-      InpTradingMode==EA_MODE_AUTO
-   );
-
-   //-----------------------------------------------------------------
-   // Growth controller
-   //-----------------------------------------------------------------
-
-   if(!InitializeGrowthController())
+   if(!HasRequiredHistory())
    {
       Print(
-         "[GROWTH] Initialization failed."
+         "[INIT] Warning: required history is not "
+         "fully available yet."
       );
 
-      return(INIT_FAILED);
+      Print(
+         "[INIT] EA will wait for history."
+      );
    }
 
    //-----------------------------------------------------------------
-   // Status
+   // Initial status
    //-----------------------------------------------------------------
 
    Print(
-      "=================================================="
+      "[INIT] Gold-only protection: ACTIVE"
    );
 
    Print(
-      "Exness ICT EA initialized"
+      "[INIT] M1 scalper: REMOVED"
    );
 
    Print(
-      "Symbol: ",
-      _Symbol
+      "[INIT] Multi-strategy confluence: ACTIVE"
    );
 
    Print(
-      "Mode: ",
-      EnumToString(
-         InpTradingMode
-      )
+      "[INIT] H4/H1/M15/M5 framework: ACTIVE"
    );
 
    Print(
-      "Trading enabled: ",
-      InpEnableTrading
+      "[INIT] Risk engine: ACTIVE"
    );
 
    Print(
-      "Risk: ",
-      DoubleToString(
-         InpRiskPercent,
-         2
-      ),
-      "%"
+      "[INIT] Growth controller: ADVISORY"
    );
 
    Print(
-      "Max total risk: ",
-      DoubleToString(
-         InpMaxTotalRiskPct,
-         2
-      ),
-      "%"
+      "[INIT] Initialization complete."
    );
 
-   Print(
-      "Daily loss limit: ",
-      DoubleToString(
-         InpDailyLossLimitPct,
-         2
-      ),
-      "%"
-   );
-
-   Print(
-      "=================================================="
-   );
-
-   return(INIT_SUCCEEDED);
+   return INIT_SUCCEEDED;
 }
 
 //+------------------------------------------------------------------+
@@ -1353,69 +2078,329 @@ void OnDeinit(
    const int reason)
 {
    Print(
-      "[EA] Deinitialized. Reason=",
+      "=================================================="
+   );
+
+   Print(
+      "[DEINIT] Gold Multi-Strategy EA stopped."
+   );
+
+   Print(
+      "[DEINIT] Reason=",
       reason
    );
+
+   Print(
+      "=================================================="
+   );
 }
+
 //+------------------------------------------------------------------+
-//| Expert tick function                                             |
+//| Expert tick                                                      |
 //+------------------------------------------------------------------+
+
 void OnTick()
 {
    //-----------------------------------------------------------------
-   // Update protection systems on every tick.
+   // Basic symbol protection
    //-----------------------------------------------------------------
 
-   UpdateDailyState();
-   UpdateGrowthController();
-
-   //-----------------------------------------------------------------
-   // Manage existing scalper positions even when new entries are
-   // disabled. This allows emergency/normal exit management to run.
-   //-----------------------------------------------------------------
-
-   if(
-      InpTradingMode==EA_MODE_SCALPER ||
-      InpTradingMode==EA_MODE_AUTO
-   )
+   if(!IsGoldSymbol(
+      _Symbol))
    {
-      if(InpScanMarketWatchSymbols)
-         ScanMarketWatch();
-      else
-         ManageScalperSymbol(_Symbol);
+      return;
    }
 
    //-----------------------------------------------------------------
-   // No new trades when trading is disabled.
+   // Update account protections
    //-----------------------------------------------------------------
 
-   if(!InpEnableTrading)
-      return;
+   UpdateDailyProtection();
+
+   UpdateGrowth();
 
    //-----------------------------------------------------------------
-   // Daily safety lock.
+   // Heartbeat
    //-----------------------------------------------------------------
 
-   if(!IsDailyTradingAllowed())
-      return;
+   PrintHeartbeat();
 
    //-----------------------------------------------------------------
-   // Growth target reached.
+   // Market processing
    //-----------------------------------------------------------------
 
-   if(!IsGrowthTradingAllowed())
-      return;
-
-   //-----------------------------------------------------------------
-   // Market scanning.
-   //-----------------------------------------------------------------
-
-   if(InpScanMarketWatchSymbols)
-      ScanMarketWatch();
-   else
-      ScanCurrentSymbol();
+   ProcessMarket();
 }
 
 //+------------------------------------------------------------------+
-//| End of EA                                                        |
+//| End of Expert Advisor                                            |
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Final diagnostics and status functions                           |
+//+------------------------------------------------------------------+
+
+void PrintAccountStatus()
+{
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity  = AccountInfoDouble(ACCOUNT_EQUITY);
+   double margin  = AccountInfoDouble(ACCOUNT_MARGIN);
+   double free    = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+
+   Print("--------------------------------------------------");
+   Print("[ACCOUNT]");
+   Print("Balance: ", DoubleToString(balance,2));
+   Print("Equity: ", DoubleToString(equity,2));
+   Print("Margin: ", DoubleToString(margin,2));
+   Print("Free margin: ", DoubleToString(free,2));
+   Print("Our positions: ", CountOurPositions());
+   Print("Gold positions: ", CountGoldPositions());
+   Print("--------------------------------------------------");
+}
+
+void PrintSystemStatus()
+{
+   Print("==================================================");
+   Print("[SYSTEM STATUS]");
+   Print("Gold-only: ACTIVE");
+   Print("M1 scalping: REMOVED");
+   Print("H4 primary analysis: ACTIVE");
+   Print("H1 intermediate structure: ACTIVE");
+   Print("M15 confirmation: ACTIVE");
+   Print("M5 entry confirmation: ACTIVE");
+   Print("Multi-strategy engine: ACTIVE");
+   Print("Confluence engine: ACTIVE");
+   Print("Risk engine: ACTIVE");
+   Print("Growth controller: ADVISORY");
+   Print("Development mode: ",
+         ICT_DEVELOPMENT_MODE ? "ON" : "OFF");
+   Print("Trading: ",
+         InpEnableTrading ? "ON" : "OFF");
+   Print("Last analysis: ",
+         g_lastAnalysisTime > 0
+         ? TimeToString(g_lastAnalysisTime)
+         : "NONE");
+   Print("==================================================");
+}
+
+//+------------------------------------------------------------------+
+//| Manual diagnostic trigger                                        |
+//+------------------------------------------------------------------+
+
+void RunDiagnostics()
+{
+   if(!ValidateGoldSymbol())
+      return;
+
+   PrintSystemStatus();
+   PrintAccountStatus();
+
+   if(!HasRequiredHistory())
+   {
+      Print(
+         "[DIAGNOSTIC] Required history is not ready."
+      );
+
+      return;
+   }
+
+   if(!IsSpreadAcceptable())
+   {
+      Print(
+         "[DIAGNOSTIC] Current spread is above the "
+         "configured limit."
+      );
+   }
+   else
+   {
+      Print(
+         "[DIAGNOSTIC] Spread: ACCEPTABLE"
+      );
+   }
+
+   //-----------------------------------------------------------------
+   // Run the complete analytical stack
+   //-----------------------------------------------------------------
+
+   if(!AnalyzeGold())
+   {
+      Print(
+         "[DIAGNOSTIC] Gold analysis did not produce "
+         "a usable result."
+      );
+
+      return;
+   }
+
+   PrintConfluenceAnalysis();
+
+   //-----------------------------------------------------------------
+   // Final candidate
+   //-----------------------------------------------------------------
+
+   if(!g_bestResult.valid)
+   {
+      Print(
+         "[DIAGNOSTIC] No valid candidate."
+      );
+
+      return;
+   }
+
+   Print(
+      "[DIAGNOSTIC] Best candidate score=",
+      DoubleToString(
+         g_bestResult.score,
+         1
+      )
+   );
+
+   Print(
+      "[DIAGNOSTIC] Best candidate RR=",
+      DoubleToString(
+         g_bestResult.rewardRisk,
+         2
+      )
+   );
+
+   //-----------------------------------------------------------------
+   // Risk-only diagnostic
+   //-----------------------------------------------------------------
+
+   ExecutionResult execution;
+
+   if(PrepareRiskCandidate(
+      g_bestResult,
+      execution))
+   {
+      Print(
+         "[DIAGNOSTIC] Risk candidate accepted."
+      );
+
+      PrintRiskCandidate(
+         g_bestResult,
+         execution
+      );
+   }
+   else
+   {
+      Print(
+         "[DIAGNOSTIC] Risk candidate rejected: ",
+         execution.reason
+      );
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Timer event                                                      |
+//+------------------------------------------------------------------+
+
+void OnTimer()
+{
+   /*
+      Timer is intentionally lightweight.
+
+      Trading decisions remain driven by market ticks
+      and the H4 analysis cycle.
+   */
+
+   UpdateDailyProtection();
+   UpdateGrowth();
+}
+
+//+------------------------------------------------------------------+
+//| Trade transaction event                                          |
+//+------------------------------------------------------------------+
+
+void OnTradeTransaction(
+   const MqlTradeTransaction &trans,
+   const MqlTradeRequest &request,
+   const MqlTradeResult &result)
+{
+   /*
+      Development-safe transaction logger.
+
+      No additional order is generated here.
+      This prevents accidental trade loops.
+   */
+
+   if(trans.symbol != _Symbol)
+      return;
+
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD &&
+      trans.type != TRADE_TRANSACTION_ORDER_ADD &&
+      trans.type != TRADE_TRANSACTION_ORDER_DELETE)
+   {
+      return;
+   }
+
+   Print(
+      "[TRADE EVENT] Symbol=",
+      trans.symbol,
+      " Type=",
+      IntegerToString((int)trans.type),
+      " Order=",
+      IntegerToString((long)trans.order),
+      " Deal=",
+      IntegerToString((long)trans.deal)
+   );
+}
+
+//+------------------------------------------------------------------+
+//| Final EA safety check                                            |
+//+------------------------------------------------------------------+
+
+bool FinalSafetyCheck()
+{
+   if(!IsGoldSymbol(_Symbol))
+   {
+      Print(
+         "[SAFETY] Non-gold symbol rejected."
+      );
+
+      return false;
+   }
+
+   if(ICT_DEVELOPMENT_MODE)
+   {
+      return true;
+   }
+
+   if(!InpEnableTrading)
+   {
+      return true;
+   }
+
+   if(!IsDailyTradingAllowed())
+   {
+      Print(
+         "[SAFETY] Daily protection is locked."
+      );
+
+      return false;
+   }
+
+   if(!IsGrowthAllowed())
+   {
+      Print(
+         "[SAFETY] Growth controller has stopped "
+         "new entries."
+      );
+
+      return false;
+   }
+
+   if(!IsBrokerTradingAllowed())
+   {
+      Print(
+         "[SAFETY] Broker trading is unavailable."
+      );
+
+      return false;
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| End of file                                                      |
 //+------------------------------------------------------------------+
